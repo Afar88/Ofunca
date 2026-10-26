@@ -52,6 +52,8 @@ import { OCR_APPROX_MB, downloadOcr, ocrCached, recognise, type OcrResult } from
 import {
   NOT_FOUND,
   cleanAnswer,
+  buildFollowUpPrompt,
+  SHORTER,
   focusHits,
   ONE_QUESTION_SCHEMA,
   buildAnswerPrompt,
@@ -65,7 +67,7 @@ import { SAMPLE_NOTES, SAMPLE_TITLE } from './src/sample';
 
 type Tab = 'notes' | 'ask' | 'quiz';
 type Phase = 'checking' | 'needDownload' | 'downloading' | 'loading' | 'ready' | 'error';
-type QA = { id: string; question: string; answer: string; hits: Hit[]; done: boolean; ms?: number; subject?: string };
+type QA = { id: string; question: string; answer: string; hits: Hit[]; done: boolean; ms?: number; subject?: string; replyTo?: { id: string; question: string } };
 type AiState = 'off' | 'loading' | 'embed' | 'ready';
 const AUTO = '__auto__';
 type QuizCard = { id: string; question: string; answer: string; source: StoredChunk; docName: string; revealed: boolean };
@@ -388,9 +390,42 @@ function Main() {
   const scopeValid = scope === AUTO || subjects.includes(scope) ? scope : AUTO;
   const chunksIn = (sub: string) => (sub === AUTO ? chunks : chunks.filter((c) => subjectByDoc[c.docId] === sub));
 
+  const [replyTo, setReplyTo] = useState<QA | null>(null);
+
+  // A reply to an earlier answer reuses that answer's passages, so it stays on the same topic.
+  async function followUp(prev: QA, text: string) {
+    setReplyTo(null);
+    const id = makeId('q');
+    const t0 = Date.now();
+    await guarded('Thinking…', async () => {
+      setQas((p) => [...p, { id, question: text === SHORTER ? 'Shorter, please' : text, answer: '', hits: prev.hits, done: false, subject: prev.subject, replyTo: { id: prev.id, question: prev.question } }]);
+      setBusy(null);
+      setGenerating(true);
+      let answer = '';
+      try {
+        answer = cleanAnswer(
+          await generate(
+            buildFollowUpPrompt(prev.question, prev.answer, text, prev.hits),
+            (txt) => setQas((p) => p.map((x) => (x.id === id ? { ...x, answer: cleanAnswer(txt) } : x))),
+            { maxTokens: 200 },
+          ),
+        );
+      } finally {
+        setGenerating(false);
+      }
+      setQas((p) => p.map((x) => (x.id === id ? { ...x, answer: answer || NOT_FOUND, done: true, ms: Date.now() - t0 } : x)));
+    }, 'llm');
+    setQas((p) => p.map((x) => (x.id === id ? { ...x, done: true } : x)));
+  }
+
   async function ask() {
     const q = question.trim();
     if (!q) return;
+    if (replyTo) {
+      setQuestion('');
+      await followUp(replyTo, q);
+      return;
+    }
     if (!chunks.length) {
       Alert.alert('No notes yet', 'Add some notes first (or try the sample notes).');
       return;
@@ -732,7 +767,7 @@ function Main() {
                 <View style={s.card}>
                   <Text style={s.h2}>Ask your notes</Text>
                   <Text style={s.body}>
-                    Pick a subject above, or leave it on Auto and the tutor finds the right subject for each question. Answers never mix subjects.
+                    Pick a subject above, or leave it on Auto and the tutor finds the right subject for each question. Answers never mix subjects. Tap Shorter or Reply under any answer to follow up.
                   </Text>
                   {chunks.length > 0 &&
                     ['Summarise the main ideas', 'What are the key definitions?'].map((ex) => (
@@ -743,14 +778,31 @@ function Main() {
                 </View>
               }
               keyboardShouldPersistTaps="handled"
-              renderItem={({ item }) => <QACard qa={item} onLongPress={deleteQa} />}
+              renderItem={({ item }) => (
+                <QACard
+                  qa={item}
+                  onLongPress={deleteQa}
+                  onShorter={busy || generating ? undefined : (qa) => followUp(qa, SHORTER)}
+                  onReply={busy || generating ? undefined : setReplyTo}
+                />
+              )}
             />
+            {replyTo && (
+              <View style={s.replyBar}>
+                <Text style={s.small} numberOfLines={1}>
+                  ↩ Replying to: <Text style={{ fontWeight: '700', color: C.text }}>{replyTo.question}</Text>
+                </Text>
+                <Pressable onPress={() => setReplyTo(null)} hitSlop={10}>
+                  <Text style={s.del}>✕</Text>
+                </Pressable>
+              </View>
+            )}
             <View style={s.inputRow}>
               <TextInput
                 style={s.input}
                 value={question}
                 onChangeText={setQuestion}
-                placeholder={chunks.length ? 'Ask about your notes…' : 'Import notes first'}
+                placeholder={replyTo ? 'Reply to that answer…' : chunks.length ? 'Ask about your notes…' : 'Add notes first'}
                 placeholderTextColor={C.muted}
                 editable={!busy && !generating}
                 multiline
@@ -1033,16 +1085,30 @@ function SourceCard({ n, docName, page, text }: { n: number; docName: string; pa
   );
 }
 
-const QACard = memo(function QACard({ qa, onLongPress }: { qa: QA; onLongPress?: (id: string) => void }) {
-  const [all, setAll] = useState(false);
-  const shown = all ? qa.hits : qa.hits.slice(0, 1);
+const QACard = memo(function QACard({
+  qa,
+  onLongPress,
+  onShorter,
+  onReply,
+}: {
+  qa: QA;
+  onLongPress?: (id: string) => void;
+  onShorter?: (qa: QA) => void;
+  onReply?: (qa: QA) => void;
+}) {
+  const answered = qa.done && qa.answer && qa.answer !== NOT_FOUND && qa.hits.length > 0;
   return (
     <Pressable style={{ marginBottom: 14 }} onLongPress={() => qa.done && onLongPress?.(qa.id)} delayLongPress={450}>
+      {qa.replyTo ? (
+        <Text style={[s.small, { alignSelf: 'flex-end', marginBottom: 4 }]} numberOfLines={1}>
+          ↩ {qa.replyTo.question}
+        </Text>
+      ) : null}
       <View style={s.qBubble}>
         <Text style={s.qBubbleText}>{qa.question}</Text>
       </View>
       <View style={s.aBubble}>
-        {qa.subject ? <Text style={s.fromTag}>From {qa.subject}</Text> : null}
+        {qa.subject && !qa.replyTo ? <Text style={s.fromTag}>{qa.subject}</Text> : null}
         {qa.answer ? (
           <Text style={s.body}>{qa.answer}</Text>
         ) : (
@@ -1051,20 +1117,21 @@ const QACard = memo(function QACard({ qa, onLongPress }: { qa: QA; onLongPress?:
             <Text style={s.small}>{qa.hits.length ? 'Writing answer…' : 'Searching your notes…'}</Text>
           </View>
         )}
-        {qa.done && qa.hits.length > 0 && (
-          <>
-            <Text style={s.sourcesLabel}>Source</Text>
-            {shown.map((h, i) => (
-              <SourceCard key={h.chunk.id} n={i + 1} docName={h.docName} page={h.chunk.page} text={h.chunk.text} />
-            ))}
-            {qa.hits.length > 1 && (
-              <Pressable onPress={() => setAll((x) => !x)} hitSlop={6}>
-                <Text style={s.moreLink}>{all ? 'Show less' : `Show ${qa.hits.length - 1} more source${qa.hits.length > 2 ? 's' : ''}`}</Text>
+        {answered && (onShorter || onReply) ? (
+          <View style={s.qaActions}>
+            {onShorter && (
+              <Pressable style={s.qaAction} onPress={() => onShorter(qa)} hitSlop={6}>
+                <Text style={s.qaActionText}>✂ Shorter</Text>
               </Pressable>
             )}
-          </>
-        )}
-        {qa.done && qa.ms ? <Text style={s.meta}>Answered on-device in {(qa.ms / 1000).toFixed(1)}s</Text> : null}
+            {onReply && (
+              <Pressable style={s.qaAction} onPress={() => onReply(qa)} hitSlop={6}>
+                <Text style={s.qaActionText}>↩ Reply</Text>
+              </Pressable>
+            )}
+            {qa.ms ? <Text style={[s.meta, { marginTop: 0, marginLeft: 'auto' }]}>{(qa.ms / 1000).toFixed(1)}s</Text> : null}
+          </View>
+        ) : null}
       </View>
     </Pressable>
   );
@@ -1090,6 +1157,10 @@ const s = StyleSheet.create({
   pillTextOn: { color: '#fff' },
   groupHead: { fontSize: 12, fontWeight: '800', color: C.muted, textTransform: 'uppercase', letterSpacing: 0.8 },
   fromTag: { alignSelf: 'flex-start', fontSize: 11, fontWeight: '700', color: C.primary, backgroundColor: C.primarySoft, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 10, marginBottom: 8, overflow: 'hidden' },
+  replyBar: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 14, paddingVertical: 8, backgroundColor: C.primarySoft, borderTopWidth: 1, borderTopColor: C.border },
+  qaActions: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 12 },
+  qaAction: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 14, backgroundColor: C.primarySoft },
+  qaActionText: { fontSize: 12.5, fontWeight: '700', color: C.primary },
   histBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 8 },
   clearLink: { fontSize: 13, fontWeight: '700', color: C.danger },
   moreLink: { fontSize: 12.5, fontWeight: '700', color: C.primary, marginTop: 8 },

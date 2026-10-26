@@ -79,6 +79,24 @@ export function buildAnswerPrompt(question: string, hits: Hit[]) {
   ];
 }
 
+/** Follow-up on an earlier answer ("make it shorter", or any reply), using the same passages. */
+export function buildFollowUpPrompt(prevQuestion: string, prevAnswer: string, followUp: string, hits: Hit[]) {
+  const context = hits.map((h, i) => `[${i + 1}] ${h.chunk.text}`).join('\n\n');
+  const system =
+    'You are a study tutor. The student is replying to your earlier answer. Use ONLY the note excerpts and your earlier answer. ' +
+    'Do exactly what the student asks (for example: shorter, simpler, one point only). Keep it brief. ' +
+    `If the excerpts cannot answer it, reply exactly: "${NOT_FOUND}"`;
+  const user =
+    `Note excerpts:\n${context}\n\nEarlier question: ${prevQuestion}\nYour earlier answer: ${prevAnswer}\n\n` +
+    `Student's reply: ${followUp}\nAnswer:`;
+  return [
+    { role: 'system' as const, content: system },
+    { role: 'user' as const, content: user },
+  ];
+}
+
+export const SHORTER = 'Give me a shorter version, in one simple sentence.';
+
 export const QUIZ_SCHEMA = {
   type: 'object',
   properties: {
@@ -187,8 +205,9 @@ export function parseOneQuestion(raw: string): { question: string; answer: strin
 
 /** Tidies small-model quirks: a stray leading "[n]" and duplicated citations. */
 export function cleanAnswer(text: string): string {
+  // The chat shows plain answers: excerpt numbers like [1] are removed.
   return text
-    .replace(/^\s*(\[\d+\]\s*)+/, '')
-    .replace(/(\[\d+\])(\s*\1)+/g, '$1')
+    .replace(/\s*\[\d+(?:\s*,\s*\d+)*\]/g, '')
+    .replace(/[ \t]{2,}/g, ' ')
     .trim();
 }
