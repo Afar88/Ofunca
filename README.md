@@ -62,13 +62,13 @@ The release APK requests only:
 - `INTERNET` for the one-time model download
 - `ACCESS_NETWORK_STATE` for the offline indicator
 
-Files and photos are opened with the Android system picker (Storage Access Framework), so the app needs **no storage, camera or media permissions**. Storage, media, camera, microphone, overlay, SMS, contacts, location and install-packages permissions are all explicitly removed in `app.json` (`blockedPermissions`). The release build is not debuggable. It is signed with APK Signature Scheme v1 + v2 + v3, with no packers and no downloaded executable code (only model weights are downloaded). R8 shrinking is enabled by QVAC's official Expo plugin; this is the standard Android Gradle tool, not an obfuscating packer.
+Files and photos are opened with the Android system picker (Storage Access Framework), so the app needs **no storage, camera or media permissions**. Storage, media, camera, microphone, overlay, SMS, contacts, location and install-packages permissions are all explicitly removed in `app.json` (`blockedPermissions`). The release build is not debuggable. It is signed with APK Signature Scheme v2 + v3, with no packers and no downloaded executable code (only model weights are downloaded). R8 shrinking is enabled by QVAC's official Expo plugin; this is the standard Android Gradle tool, not an obfuscating packer.
 
 > Sideloaded apps still show Android's normal *"install unknown apps"* prompt, and Xiaomi/Play Protect may run a routine scan of an app they have not seen before. That is expected for any APK installed outside the Play Store.
 
 ## Install (Android phone, arm64, Android 10+)
 
-1. Download `StudyTutor-v1.0.0.apk` to the phone.
+1. Download `StudyTutor-v1.0.1.apk` to the phone.
 2. Open it. If asked, allow your browser or file manager to *install unknown apps*, then tap **Install**.
 3. Open **Study Tutor**. On **Wi‑Fi**, tap **Download AI models** (≈1.15 GB, one time).
 4. When you see **"All set!"** you can switch on airplane mode. Everything keeps working.
@@ -82,7 +82,7 @@ npm ci
 node scripts/build-pdf-html.js          # inlines pdf.js into src/pdf/pdfHtml.generated.ts
 npx expo prebuild --platform android    # QVAC plugin bundles the worker + links native addons
 cd android && ./gradlew assembleRelease # -> app/build/outputs/apk/release/app-release-unsigned.apk
-# sign (v1+v2+v3) with your own keystore:
+# sign (v2+v3) with your own keystore:
 KEYSTORE=release.keystore KS_PASS_FILE=pass.txt scripts/sign-apk.sh \
   android/app/build/outputs/apk/release/app-release-unsigned.apk StudyTutor.apk
 ```
