@@ -13,6 +13,7 @@ import {
   Text,
   TextInput,
   View,
+  useColorScheme,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
@@ -21,7 +22,7 @@ import * as FS from 'expo-file-system/legacy';
 import NetInfo from '@react-native-community/netinfo';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 
-import { C } from './src/theme';
+import { C, DARK, LIGHT } from './src/theme';
 import { PdfExtractor, type PdfExtractorHandle } from './src/pdf/PdfExtractor';
 import { chunkPages, chunkText, type RawChunk } from './src/chunk';
 import { GENERAL, loadHistory, saveHistory, addDoc, clearAll, loadDB, makeId, removeDoc, roundVec, setDocSubject, subjectOf, subjectsOf, type NoteDoc, type StoredChunk } from './src/store';
@@ -73,7 +74,8 @@ const AUTO = '__auto__';
 type QuizCard = { id: string; question: string; answer: string; source: StoredChunk; docName: string; revealed: boolean };
 
 const SETTINGS_FILE = (FS.documentDirectory ?? '') + 'study-tutor-settings.json';
-type Settings = { device?: Device; setupDone?: boolean };
+type ThemePref = 'system' | 'light' | 'dark';
+type Settings = { device?: Device; setupDone?: boolean; theme?: ThemePref };
 async function readSettings(): Promise<Settings> {
   try {
     return JSON.parse(await FS.readAsStringAsync(SETTINGS_FILE));
@@ -95,6 +97,20 @@ export default function App() {
 }
 
 function Main() {
+  // Light / dark mode: follows the phone by default, or the user's choice in Settings.
+  const sys = useColorScheme();
+  const [themePref, setThemePref] = useState<ThemePref>('system');
+  useEffect(() => {
+    readSettings().then((st) => st.theme && setThemePref(st.theme));
+  }, []);
+  const dark = themePref === 'dark' || (themePref === 'system' && sys === 'dark');
+  const themeKey = dark ? 'dark' : 'light';
+  if (applied !== themeKey) applyTheme(dark);
+  function chooseTheme(t: ThemePref) {
+    setThemePref(t);
+    saveSettings({ theme: t });
+  }
+
   const [phase, setPhase] = useState<Phase>('checking');
   const [phaseMsg, setPhaseMsg] = useState('Starting on-device AI…');
   const [dl, setDl] = useState<Partial<Record<ModelKey, DlState>>>({});
@@ -639,7 +655,7 @@ function Main() {
 
   return (
     <SafeAreaView style={s.safe} edges={['top', 'left', 'right', 'bottom']}>
-      <StatusBar style="dark" />
+      <StatusBar style={dark ? 'light' : 'dark'} />
       <View style={s.header}>
         <View style={{ flex: 1 }}>
           <Text style={s.headerTitle}>Study Tutor</Text>
@@ -729,6 +745,14 @@ function Main() {
                   </Pressable>
                 ))}
               </View>
+              <View style={s.segment}>
+                <Text style={[s.small, { marginRight: 8 }]}>Theme:</Text>
+                {(['system', 'light', 'dark'] as ThemePref[]).map((t) => (
+                  <Pressable key={t} onPress={() => chooseTheme(t)} style={[s.segBtn, themePref === t && s.segBtnOn]}>
+                    <Text style={[s.segText, themePref === t && s.segTextOn]}>{t === 'system' ? 'Auto' : t === 'light' ? '☀ Light' : '☾ Dark'}</Text>
+                  </Pressable>
+                ))}
+              </View>
               {docs.length > 0 && (
                 <Pressable
                   onPress={() =>
@@ -778,8 +802,10 @@ function Main() {
                 </View>
               }
               keyboardShouldPersistTaps="handled"
+              extraData={`${themeKey}${busy}${generating}`}
               renderItem={({ item }) => (
                 <QACard
+                  theme={themeKey}
                   qa={item}
                   onLongPress={deleteQa}
                   onShorter={busy || generating ? undefined : (qa) => followUp(qa, SHORTER)}
@@ -884,6 +910,7 @@ function Main() {
 
       <Modal visible={!!editor} animationType="slide" onRequestClose={() => setEditor(null)}>
         <SafeAreaView style={s.safe}>
+          <StatusBar style={dark ? 'light' : 'dark'} />
           <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
             <View style={s.header}>
               <Text style={[s.headerTitle, { flex: 1 }]}>{editor?.mode === 'ocr' ? 'Check snapped text' : 'Paste notes'}</Text>
@@ -1092,6 +1119,7 @@ const QACard = memo(function QACard({
   onReply,
 }: {
   qa: QA;
+  theme?: string;
   onLongPress?: (id: string) => void;
   onShorter?: (qa: QA) => void;
   onReply?: (qa: QA) => void;
@@ -1137,7 +1165,14 @@ const QACard = memo(function QACard({
   );
 });
 
-const s = StyleSheet.create({
+let applied = 'light';
+function applyTheme(dark: boolean) {
+  Object.assign(C, dark ? DARK : LIGHT);
+  s = makeStyles();
+  applied = dark ? 'dark' : 'light';
+}
+
+const makeStyles = () => StyleSheet.create({
   safe: { flex: 1, backgroundColor: C.bg },
   hero: { backgroundColor: '#0E1330' },
   setup: { padding: 22, paddingTop: 56, flexGrow: 1 },
@@ -1236,3 +1271,4 @@ const s = StyleSheet.create({
   field: { backgroundColor: C.card, borderWidth: 1, borderColor: C.border, borderRadius: 12, padding: 12, fontSize: 15, color: C.text },
   area: { minHeight: 260 },
 });
+let s = makeStyles();
