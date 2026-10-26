@@ -1102,7 +1102,7 @@ function SourceCard({ n, docName, page, text }: { n: number; docName: string; pa
   return (
     <Pressable style={s.source} onPress={() => setOpen((o) => !o)}>
       <Text style={s.sourceHead}>
-        [{n}] {docName}
+        From your notes: {docName}
         {page ? ` · p.${page}` : ''}
       </Text>
       <Text style={s.sourceText} numberOfLines={open ? undefined : 4}>
@@ -1125,6 +1125,7 @@ const QACard = memo(function QACard({
   onReply?: (qa: QA) => void;
 }) {
   const answered = qa.done && qa.answer && qa.answer !== NOT_FOUND && qa.hits.length > 0;
+  const [showSrc, setShowSrc] = useState(false);
   return (
     <Pressable style={{ marginBottom: 14 }} onLongPress={() => qa.done && onLongPress?.(qa.id)} delayLongPress={450}>
       {qa.replyTo ? (
@@ -1157,9 +1158,15 @@ const QACard = memo(function QACard({
                 <Text style={s.qaActionText}>↩ Reply</Text>
               </Pressable>
             )}
+            <Pressable style={s.qaAction} onPress={() => setShowSrc((x) => !x)} hitSlop={6}>
+              <Text style={s.qaActionText}>{showSrc ? 'Hide' : 'Where from?'}</Text>
+            </Pressable>
             {qa.ms ? <Text style={[s.meta, { marginTop: 0, marginLeft: 'auto' }]}>{(qa.ms / 1000).toFixed(1)}s</Text> : null}
           </View>
         ) : null}
+        {answered && showSrc && (
+          <SourceCard n={1} docName={qa.hits[0].docName} page={qa.hits[0].chunk.page} text={qa.hits[0].chunk.text} />
+        )}
       </View>
     </Pressable>
   );
