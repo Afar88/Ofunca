@@ -24,7 +24,7 @@ import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { C } from './src/theme';
 import { PdfExtractor, type PdfExtractorHandle } from './src/pdf/PdfExtractor';
 import { chunkPages, chunkText, type RawChunk } from './src/chunk';
-import { GENERAL, addDoc, clearAll, loadDB, makeId, removeDoc, roundVec, setDocSubject, subjectOf, subjectsOf, type NoteDoc, type StoredChunk } from './src/store';
+import { GENERAL, loadHistory, saveHistory, addDoc, clearAll, loadDB, makeId, removeDoc, roundVec, setDocSubject, subjectOf, subjectsOf, type NoteDoc, type StoredChunk } from './src/store';
 import {
   MODELS,
   MODEL_GROUPS,
@@ -441,6 +441,41 @@ function Main() {
   // ---------- Quiz ----------
   const [quiz, setQuiz] = useState<QuizCard[]>([]);
 
+  // ---------- Saved history: answers and quizzes are still there after closing the app ----------
+  const historyLoaded = useRef(false);
+  useEffect(() => {
+    loadHistory<{ qas?: QA[]; quiz?: QuizCard[] }>().then((h) => {
+      if (h?.qas) setQas(h.qas.map((x) => ({ ...x, done: true, answer: x.answer || NOT_FOUND })));
+      if (h?.quiz) setQuiz(h.quiz);
+      historyLoaded.current = true;
+    });
+  }, []);
+  useEffect(() => {
+    if (!historyLoaded.current || generating) return;
+    const t = setTimeout(() => {
+      // Embeddings are dropped from the saved copy: they're big and not needed to show past answers.
+      const lite = (c: StoredChunk) => ({ ...c, vec: [] as number[] });
+      saveHistory({
+        qas: qas.filter((x) => x.done).map((x) => ({ ...x, hits: x.hits.map((h) => ({ ...h, chunk: lite(h.chunk) })) })),
+        quiz: quiz.map((z) => ({ ...z, source: lite(z.source) })),
+      });
+    }, 400);
+    return () => clearTimeout(t);
+  }, [qas, quiz, generating]);
+
+  function confirmClear(what: 'chat' | 'quiz') {
+    Alert.alert(what === 'chat' ? 'Clear all questions?' : 'Clear this quiz?', 'This only removes the history. Your notes stay.', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Clear', style: 'destructive', onPress: () => (what === 'chat' ? setQas([]) : setQuiz([])) },
+    ]);
+  }
+  function deleteQa(id: string) {
+    Alert.alert('Delete this question?', undefined, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Delete', style: 'destructive', onPress: () => setQas((prev) => prev.filter((x) => x.id !== id)) },
+    ]);
+  }
+
   async function makeQuiz() {
     const pool = chunksIn(scopeValid);
     if (!pool.length) {
@@ -679,6 +714,14 @@ function Main() {
         {tab === 'ask' && (
           <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
             {subjects.length > 0 && <SubjectChips subjects={subjects} value={scopeValid} onChange={setScope} />}
+            {qas.length > 0 && !busy && !generating && (
+              <View style={s.histBar}>
+                <Text style={s.small}>{qas.length} saved question{qas.length === 1 ? '' : 's'} · hold one to delete it</Text>
+                <Pressable onPress={() => confirmClear('chat')} hitSlop={8}>
+                  <Text style={s.clearLink}>Clear all</Text>
+                </Pressable>
+              </View>
+            )}
             <FlatList
               ref={listRef}
               data={qas}
@@ -700,7 +743,7 @@ function Main() {
                 </View>
               }
               keyboardShouldPersistTaps="handled"
-              renderItem={({ item }) => <QACard qa={item} />}
+              renderItem={({ item }) => <QACard qa={item} onLongPress={deleteQa} />}
             />
             <View style={s.inputRow}>
               <TextInput
@@ -734,6 +777,11 @@ function Main() {
             <Pressable style={[s.btn, (!!busy || !chunks.length) && s.btnDisabled]} disabled={!!busy || !chunks.length} onPress={makeQuiz}>
               <Text style={s.btnText}>{quiz.length ? '🔄 New quiz' : '🧠 Quiz me'}</Text>
             </Pressable>
+            {quiz.length > 0 && !busy && (
+              <Pressable onPress={() => confirmClear('quiz')} hitSlop={8} style={{ alignSelf: 'center', marginTop: 10 }}>
+                <Text style={s.clearLink}>Clear quiz</Text>
+              </Pressable>
+            )}
             {!quiz.length && !busy && (
               <Text style={[s.small, { textAlign: 'center', marginTop: 12 }]}>
                 {chunks.length ? `Generates 4 questions from ${scopeValid === AUTO ? 'all your notes' : scopeValid}.` : 'Add notes first.'}
@@ -985,11 +1033,11 @@ function SourceCard({ n, docName, page, text }: { n: number; docName: string; pa
   );
 }
 
-const QACard = memo(function QACard({ qa }: { qa: QA }) {
+const QACard = memo(function QACard({ qa, onLongPress }: { qa: QA; onLongPress?: (id: string) => void }) {
   const [all, setAll] = useState(false);
   const shown = all ? qa.hits : qa.hits.slice(0, 1);
   return (
-    <View style={{ marginBottom: 14 }}>
+    <Pressable style={{ marginBottom: 14 }} onLongPress={() => qa.done && onLongPress?.(qa.id)} delayLongPress={450}>
       <View style={s.qBubble}>
         <Text style={s.qBubbleText}>{qa.question}</Text>
       </View>
@@ -1018,7 +1066,7 @@ const QACard = memo(function QACard({ qa }: { qa: QA }) {
         )}
         {qa.done && qa.ms ? <Text style={s.meta}>Answered on-device in {(qa.ms / 1000).toFixed(1)}s</Text> : null}
       </View>
-    </View>
+    </Pressable>
   );
 });
 
@@ -1042,6 +1090,8 @@ const s = StyleSheet.create({
   pillTextOn: { color: '#fff' },
   groupHead: { fontSize: 12, fontWeight: '800', color: C.muted, textTransform: 'uppercase', letterSpacing: 0.8 },
   fromTag: { alignSelf: 'flex-start', fontSize: 11, fontWeight: '700', color: C.primary, backgroundColor: C.primarySoft, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 10, marginBottom: 8, overflow: 'hidden' },
+  histBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 8 },
+  clearLink: { fontSize: 13, fontWeight: '700', color: C.danger },
   moreLink: { fontSize: 12.5, fontWeight: '700', color: C.primary, marginTop: 8 },
   scrim: { flex: 1, backgroundColor: 'rgba(14,19,48,0.55)', justifyContent: 'flex-end' },
   sheet: { backgroundColor: C.card, borderTopLeftRadius: 22, borderTopRightRadius: 22, padding: 20, paddingBottom: 28 },

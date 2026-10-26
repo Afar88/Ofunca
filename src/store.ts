@@ -107,3 +107,21 @@ export function roundVec(v: number[]): number[] {
 export function makeId(prefix = '') {
   return prefix + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 }
+
+// ---------- Saved chat & quiz history (survives closing the app) ----------
+const HISTORY = DIR + 'history.json';
+export async function loadHistory<T = any>(): Promise<T | null> {
+  try {
+    const info = await FS.getInfoAsync(HISTORY);
+    if (!info.exists) return null;
+    return JSON.parse(await FS.readAsStringAsync(HISTORY)) as T;
+  } catch {
+    return null;
+  }
+}
+export async function saveHistory(data: unknown) {
+  try {
+    await ensureDir();
+    await FS.writeAsStringAsync(HISTORY, JSON.stringify(data));
+  } catch {}
+}
