@@ -1,0 +1,74 @@
+name: Android release APK
+
+# Builds an UNSIGNED release APK on GitHub's Linux runners (x86_64 Android SDK/NDK).
+# The APK is signed afterwards, offline, with apksigner (v2 + v3) using a private
+# keystore that is never stored in this repository or in CI.
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['**.md', 'docs/**']
+  workflow_dispatch:
+
+concurrency:
+  group: android-release
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.21.1
+          cache: npm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup /usr/local/share/boost || true
+          df -h /
+
+      - name: Install Android NDK 29 (required by QVAC native addons)
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;29.0.14206865" > /dev/null
+
+      - name: Install JS dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Generate offline PDF reader page
+        run: node scripts/build-pdf-html.js
+
+      - name: Expo prebuild (QVAC worker bundle + native addon linking)
+        run: npx expo prebuild --platform android --clean
+        env:
+          CI: '1'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Gradle assembleRelease
+        working-directory: android
+        run: ./gradlew assembleRelease --no-daemon -PreactNativeArchitectures=arm64-v8a
+        env:
+          NODE_ENV: production
+
+      - name: Collect APK
+        run: |
+          mkdir -p out
+          cp android/app/build/outputs/apk/release/*.apk out/
+          ls -la out
+          sha256sum out/*.apk | tee out/SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: study-tutor-release-unsigned
+          path: out/
+          retention-days: 14
+          compression-level: 0
