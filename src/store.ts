@@ -9,7 +9,21 @@ export type NoteDoc = {
   addedAt: number;
   chunkCount: number;
   charCount: number;
+  subject?: string; // e.g. "Biology". Questions can be limited to one subject so notes never mix.
 };
+
+export const GENERAL = 'General';
+export const subjectOf = (d: NoteDoc) => (d.subject && d.subject.trim()) || GENERAL;
+
+/** Subjects in the library, most recently used first. */
+export function subjectsOf(docs: NoteDoc[]): string[] {
+  const out: string[] = [];
+  for (const d of docs) {
+    const s = subjectOf(d);
+    if (!out.includes(s)) out.push(s);
+  }
+  return out;
+}
 
 export type StoredChunk = {
   id: string;
@@ -68,6 +82,13 @@ export async function removeDoc(docId: string) {
   const db = await loadDB();
   db.docs = db.docs.filter((d) => d.id !== docId);
   db.chunks = db.chunks.filter((c) => c.docId !== docId);
+  await save();
+}
+
+export async function setDocSubject(docId: string, subject: string) {
+  const db = await loadDB();
+  const d = db.docs.find((x) => x.id === docId);
+  if (d) d.subject = subject.trim() || GENERAL;
   await save();
 }
 

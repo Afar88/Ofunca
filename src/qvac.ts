@@ -9,6 +9,7 @@ import {
   downloadAsset,
   embed,
   getModelInfo,
+  getSystemResources,
   loadModel,
   unloadModel,
   EMBEDDINGGEMMA_300M_Q4_0,
@@ -246,23 +247,74 @@ export async function importPickedModel(
   return m;
 }
 
-/** Loads both models into memory from the local cache. Works offline once downloaded. */
-export async function loadModels(device: Device, onStatus?: (s: string) => void) {
-  if (llmId && embedId && loadedDevice === device) return;
-  await unloadAll();
-  onStatus?.('Loading embedding model…');
+// Phone CPUs mix fast and slow cores. 4 threads keeps llama.cpp on the fast cores, which is
+// usually much quicker than spreading work over all 8 (the slow cores hold everyone back).
+// Never use more threads than the phone has cores: oversubscribing made answers ~15x slower in tests.
+async function cpuThreads(): Promise<number> {
+  try {
+    const r: any = await getSystemResources();
+    const cpu = r?.capabilities?.cpu?.value;
+    const cores = Number(cpu?.physicalCores?.value || cpu?.logicalCores?.value || 0);
+    if (cores > 0) return cores >= 6 ? 4 : Math.max(1, cores);
+  } catch {}
+  return 4;
+}
+
+/** Loads the small embedding model first (fast) so notes can be added while the LLM loads. */
+export async function loadEmbedModel(device: Device) {
+  if (embedId && loadedDevice === device) return;
+  if (loadedDevice && loadedDevice !== device) await unloadAll();
   embedId = await loadModel({
     modelSrc: EMBED_MODEL,
     modelType: 'embeddings',
     modelConfig: { device, verbosity: VERBOSITY.ERROR } as any,
   });
-  onStatus?.('Loading language model…');
+  loadedDevice = device;
+}
+
+export async function loadLlmModel(device: Device) {
+  if (llmId && loadedDevice === device) return;
+  const threads = await cpuThreads();
   llmId = await loadModel({
     modelSrc: LLM_MODEL,
     modelType: 'llm',
-    modelConfig: { device, ctx_size: 4096, verbosity: VERBOSITY.ERROR } as any,
+    // 2048 tokens is plenty for 3 short passages + answer, and halves memory/setup vs 4096.
+    modelConfig: { device, ctx_size: 2048, threads, verbosity: VERBOSITY.ERROR } as any,
   });
   loadedDevice = device;
+}
+
+/** Runs one tiny generation so the first real question doesn't pay the warm-up cost. */
+export async function warmUp() {
+  if (!llmId) return;
+  try {
+    const run: any = completion({
+      modelId: llmId,
+      history: [{ role: 'user', content: 'Hi' }],
+      stream: true,
+      generationParams: { predict: 1, temp: 0 },
+    } as any);
+    for await (const _ of run.events) {
+    }
+  } catch {}
+}
+
+/** Loads both models into memory from the local cache. Works offline once downloaded. */
+export async function loadModels(device: Device, onStatus?: (s: string) => void) {
+  onStatus?.('Preparing note search…');
+  await loadEmbedModel(device);
+  onStatus?.('Preparing the tutor…');
+  await loadLlmModel(device);
+}
+
+export function isEmbedReady() {
+  return !!embedId;
+}
+
+let activeRequest: string | null = null;
+/** Stops the answer that is being written right now (keeps what was written so far). */
+export function stopGenerating() {
+  if (activeRequest) cancel({ requestId: activeRequest } as any).catch(() => {});
 }
 
 export async function unloadAll() {
@@ -287,7 +339,7 @@ const QUERY_PREFIX = 'task: search result | query: ';
 export async function embedDocuments(texts: string[], onProgress?: (done: number, total: number) => void): Promise<number[][]> {
   if (!embedId) throw new Error('Models are not loaded yet');
   const out: number[][] = [];
-  const BATCH = 8;
+  const BATCH = 16;
   for (let i = 0; i < texts.length; i += BATCH) {
     const batch = texts.slice(i, i + BATCH).map((t) => DOC_PREFIX + t);
     const { embedding } = await embed({ modelId: embedId, text: batch });
@@ -321,16 +373,28 @@ export async function generate(
       ? { responseFormat: { type: 'json_schema', json_schema: { name: 'quiz', schema: opts.jsonSchema } } }
       : {}),
   } as any);
+  activeRequest = (run as any).requestId ?? null;
   let acc = '';
-  for await (const ev of (run as any).events as AsyncIterable<any>) {
-    if (ev?.type === 'contentDelta' && typeof ev.text === 'string') {
-      acc += ev.text;
-      onToken(acc);
-    }
-  }
+  let last = 0;
   try {
-    const fin = await (run as any).final;
-    if (fin?.content && fin.content.length >= acc.length) acc = fin.content;
-  } catch {}
+    for await (const ev of (run as any).events as AsyncIterable<any>) {
+      if (ev?.type === 'contentDelta' && typeof ev.text === 'string') {
+        acc += ev.text;
+        // Repaint at most ~12 times a second: smoother scrolling, less work for the phone.
+        const now = Date.now();
+        if (now - last > 80) {
+          last = now;
+          onToken(acc);
+        }
+      }
+    }
+    try {
+      const fin = await (run as any).final;
+      if (fin?.content && fin.content.length >= acc.length) acc = fin.content;
+    } catch {}
+  } finally {
+    activeRequest = null;
+  }
+  onToken(acc);
   return acc.trim();
 }

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { memo, useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -24,7 +24,7 @@ import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { C } from './src/theme';
 import { PdfExtractor, type PdfExtractorHandle } from './src/pdf/PdfExtractor';
 import { chunkPages, chunkText, type RawChunk } from './src/chunk';
-import { addDoc, clearAll, loadDB, makeId, removeDoc, roundVec, type NoteDoc, type StoredChunk } from './src/store';
+import { GENERAL, addDoc, clearAll, loadDB, makeId, removeDoc, roundVec, setDocSubject, subjectOf, subjectsOf, type NoteDoc, type StoredChunk } from './src/store';
 import {
   MODELS,
   MODEL_GROUPS,
@@ -34,8 +34,13 @@ import {
   embedQuery,
   generate,
   importPickedModel,
+  isEmbedReady,
   isReady,
-  loadModels,
+  loadEmbedModel,
+  loadLlmModel,
+  stopGenerating,
+  unloadAll,
+  warmUp,
   modelsCached,
   savedProgress,
   specOf,
@@ -47,6 +52,7 @@ import { OCR_APPROX_MB, downloadOcr, ocrCached, recognise, type OcrResult } from
 import {
   NOT_FOUND,
   cleanAnswer,
+  focusHits,
   ONE_QUESTION_SCHEMA,
   buildAnswerPrompt,
   buildOneQuestionPrompt,
@@ -59,10 +65,24 @@ import { SAMPLE_NOTES, SAMPLE_TITLE } from './src/sample';
 
 type Tab = 'notes' | 'ask' | 'quiz';
 type Phase = 'checking' | 'needDownload' | 'downloading' | 'loading' | 'ready' | 'error';
-type QA = { id: string; question: string; answer: string; hits: Hit[]; done: boolean; ms?: number };
+type QA = { id: string; question: string; answer: string; hits: Hit[]; done: boolean; ms?: number; subject?: string };
+type AiState = 'off' | 'loading' | 'embed' | 'ready';
+const AUTO = '__auto__';
 type QuizCard = { id: string; question: string; answer: string; source: StoredChunk; docName: string; revealed: boolean };
 
 const SETTINGS_FILE = (FS.documentDirectory ?? '') + 'study-tutor-settings.json';
+type Settings = { device?: Device; setupDone?: boolean };
+async function readSettings(): Promise<Settings> {
+  try {
+    return JSON.parse(await FS.readAsStringAsync(SETTINGS_FILE));
+  } catch {
+    return {};
+  }
+}
+async function saveSettings(patch: Settings) {
+  const cur = await readSettings();
+  await FS.writeAsStringAsync(SETTINGS_FILE, JSON.stringify({ ...cur, ...patch })).catch(() => {});
+}
 
 export default function App() {
   return (
@@ -103,15 +123,31 @@ function Main() {
     return () => unsub();
   }, []);
 
-  const bootModels = useCallback(async (dev: Device) => {
-    try {
-      setPhase('loading');
-      await loadModels(dev, setPhaseMsg);
-      setPhase('ready');
-    } catch (e: any) {
-      setPhase('error');
-      setPhaseMsg(e?.message ?? String(e));
-    }
+  // The app opens straight away; the AI models load in the background (search model first,
+  // then the tutor) and anything that needs them waits for them instead of blocking the screen.
+  const [ai, setAi] = useState<AiState>('off');
+  const modelsReady = useRef<Promise<boolean> | null>(null);
+  const bootModels = useCallback((dev: Device) => {
+    const p = (async () => {
+      try {
+        setPhase('ready');
+        setAi('loading');
+        await loadEmbedModel(dev);
+        setAi('embed');
+        await loadLlmModel(dev);
+        setAi('ready');
+        await saveSettings({ device: dev, setupDone: true });
+        warmUp().catch(() => {});
+        return true;
+      } catch (e: any) {
+        setAi('off');
+        setPhase('error');
+        setPhaseMsg(e?.message ?? String(e));
+        return false;
+      }
+    })();
+    modelsReady.current = p;
+    return p;
   }, []);
 
   const refreshSaved = useCallback(async () => {
@@ -134,12 +170,17 @@ function Main() {
       // Must run before the first QVAC call: the SDK reads this file when its worker starts.
       await writeQvacRuntimeConfig();
       await refreshLibrary();
-      let dev: Device = 'cpu';
-      try {
-        const s = JSON.parse(await FS.readAsStringAsync(SETTINGS_FILE));
-        if (s.device === 'gpu' || s.device === 'cpu') dev = s.device;
-      } catch {}
+      const st = await readSettings();
+      const dev: Device = st.device === 'gpu' ? 'gpu' : 'cpu';
       setDevice(dev);
+      if (st.setupDone) {
+        // Fast start: models were set up before, so open the app now and load them behind the scenes.
+        const ok = await bootModels(dev);
+        if (ok) {
+          modelsCached().then((c) => setOcrMissing(!(c.ocrRec && c.ocrDet))).catch(() => {});
+          return;
+        }
+      }
       setPhaseMsg('Checking AI models on this phone…');
       const cached = await modelsCached();
       setOcrMissing(!(cached.ocrRec && cached.ocrDet));
@@ -198,12 +239,13 @@ function Main() {
   async function switchDevice(dev: Device) {
     if (dev === device || busy) return;
     setDevice(dev);
-    await FS.writeAsStringAsync(SETTINGS_FILE, JSON.stringify({ device: dev })).catch(() => {});
+    await saveSettings({ device: dev });
+    await unloadAll();
     await bootModels(dev);
   }
 
   // ---------- Indexing ----------
-  async function indexDoc(name: string, kind: NoteDoc['kind'], raw: RawChunk[]) {
+  async function indexDoc(name: string, kind: NoteDoc['kind'], raw: RawChunk[], subject: string) {
     if (!raw.length) throw new Error('No readable text found.');
     const vecs = await embedDocuments(
       raw.map((c) => c.text),
@@ -212,26 +254,46 @@ function Main() {
     const docId = makeId('d');
     const stored: StoredChunk[] = raw.map((c, i) => ({ id: makeId('c'), docId, page: c.page, text: c.text, vec: roundVec(vecs[i]) }));
     await addDoc(
-      { id: docId, name, kind, addedAt: Date.now(), chunkCount: stored.length, charCount: raw.reduce((s, c) => s + c.text.length, 0) },
+      { id: docId, name, kind, subject: subject.trim() || GENERAL, addedAt: Date.now(), chunkCount: stored.length, charCount: raw.reduce((s, c) => s + c.text.length, 0) },
       stored,
     );
     await refreshLibrary();
   }
 
-  async function guarded(label: string, fn: () => Promise<void>) {
+  async function guarded(label: string, fn: () => Promise<void>, needs: 'embed' | 'llm' = 'embed') {
     if (busy) return;
-    if (!isReady()) {
-      Alert.alert('Models not ready', 'Please wait for the AI models to finish loading.');
-      return;
-    }
+    const ready = () => (needs === 'llm' ? isReady() : isEmbedReady());
     setBusy(label);
     try {
+      if (!ready()) {
+        setBusy('Getting the AI ready… (only takes a moment)');
+        const ok = await (modelsReady.current ?? Promise.resolve(false));
+        if (!ok || !ready()) throw new Error('The AI models could not be loaded. Restart the app and try again.');
+        setBusy(label);
+      }
       await fn();
     } catch (e: any) {
       Alert.alert('Something went wrong', e?.message ?? String(e));
     } finally {
       setBusy(null);
     }
+  }
+
+  // ---------- Subjects ----------
+  const subjects = subjectsOf(docs);
+  const [picker, setPicker] = useState<null | { title: string; value: string; resolve: (v: string | null) => void }>(null);
+  function pickSubject(title: string, initial = ''): Promise<string | null> {
+    return new Promise((resolve) => setPicker({ title, value: initial || (subjects[0] ?? ''), resolve }));
+  }
+  function closePicker(v: string | null) {
+    picker?.resolve(v == null ? null : v.trim() || GENERAL);
+    setPicker(null);
+  }
+  async function moveDoc(d: NoteDoc) {
+    const sub = await pickSubject(`Move "${d.name}" to…`, subjectOf(d));
+    if (!sub) return;
+    await setDocSubject(d.id, sub);
+    await refreshLibrary();
   }
 
   async function importFile() {
@@ -243,6 +305,8 @@ function Main() {
     if (res.canceled || !res.assets?.length) return;
     const f = res.assets[0];
     const isPdf = (f.mimeType ?? '').includes('pdf') || f.name.toLowerCase().endsWith('.pdf');
+    const subject = await pickSubject('Which subject is this for?');
+    if (!subject) return;
     await guarded('Reading file…', async () => {
       let raw: RawChunk[];
       if (isPdf) {
@@ -253,13 +317,13 @@ function Main() {
       } else {
         raw = chunkText(await FS.readAsStringAsync(f.uri));
       }
-      await indexDoc(f.name.replace(/\.(pdf|txt|md)$/i, ''), isPdf ? 'pdf' : 'text', raw);
+      await indexDoc(f.name.replace(/\.(pdf|txt|md)$/i, ''), isPdf ? 'pdf' : 'text', raw, subject);
       FS.deleteAsync(f.uri, { idempotent: true }).catch(() => {});
     });
   }
 
   // ---------- Paste & Snap modals ----------
-  const [editor, setEditor] = useState<null | { mode: 'paste' | 'ocr'; title: string; text: string; ocr?: OcrResult }>(null);
+  const [editor, setEditor] = useState<null | { mode: 'paste' | 'ocr'; title: string; text: string; subject: string; ocr?: OcrResult }>(null);
 
   async function snapNotes() {
     // Uses the system file/gallery picker (no camera or storage permission needed).
@@ -291,60 +355,76 @@ function Main() {
     await guarded('Reading photo…', async () => {
       const r = await recognise(f.uri, setBusy);
       if (!r.text.trim()) throw new Error('No text was found in this photo. Try a sharper, well-lit photo taken straight on.');
-      setEditor({ mode: 'ocr', title: 'Snapped notes ' + new Date().toLocaleDateString(), text: r.text, ocr: r });
+      setEditor({ mode: 'ocr', title: 'Snapped notes ' + new Date().toLocaleDateString(), text: r.text, subject: subjects[0] ?? '', ocr: r });
     });
   }
 
   async function saveEditor() {
     if (!editor) return;
-    const { title, text, mode } = editor;
+    const { title, text, mode, subject } = editor;
     if (text.trim().length < 30) {
       Alert.alert('Too short', 'Add a bit more text (at least a couple of sentences).');
       return;
     }
     setEditor(null);
     await guarded('Indexing…', async () => {
-      await indexDoc(title.trim() || 'Pasted notes', mode === 'ocr' ? 'text' : 'pasted', chunkText(text));
+      await indexDoc(title.trim() || 'Pasted notes', mode === 'ocr' ? 'text' : 'pasted', chunkText(text), subject);
     });
   }
 
   async function addSample() {
     await guarded('Adding sample notes…', async () => {
-      await indexDoc(SAMPLE_TITLE, 'text', chunkText(SAMPLE_NOTES));
+      await indexDoc(SAMPLE_TITLE, 'text', chunkText(SAMPLE_NOTES), 'Biology');
     });
   }
 
   // ---------- Ask ----------
   const [qas, setQas] = useState<QA[]>([]);
   const [question, setQuestion] = useState('');
+  const [scope, setScope] = useState<string>(AUTO); // AUTO = pick the subject that best matches the question
+  const [generating, setGenerating] = useState(false);
   const listRef = useRef<FlatList<QA>>(null);
+  const subjectByDoc = Object.fromEntries(docs.map((d) => [d.id, subjectOf(d)]));
+  const scopeValid = scope === AUTO || subjects.includes(scope) ? scope : AUTO;
+  const chunksIn = (sub: string) => (sub === AUTO ? chunks : chunks.filter((c) => subjectByDoc[c.docId] === sub));
 
   async function ask() {
     const q = question.trim();
     if (!q) return;
     if (!chunks.length) {
-      Alert.alert('No notes yet', 'Import some notes first (or add the sample notes).');
+      Alert.alert('No notes yet', 'Add some notes first (or try the sample notes).');
       return;
     }
     setQuestion('');
     const id = makeId('q');
     const t0 = Date.now();
-    await guarded('Thinking…', async () => {
+    await guarded('Searching your notes…', async () => {
       setQas((prev) => [...prev, { id, question: q, answer: '', hits: [], done: false }]);
       const qv = await embedQuery(q);
-      const hits = search(qv, q, chunks, docNames, 3);
-      setQas((prev) => prev.map((x) => (x.id === id ? { ...x, hits } : x)));
+      let hits = search(qv, q, chunksIn(scopeValid), docNames, 8);
+      // Never mix subjects: in Auto mode, answer only from the subject of the best-matching passage.
+      const subject = scopeValid === AUTO ? subjectByDoc[hits[0]?.chunk.docId] : scopeValid;
+      hits = focusHits(hits.filter((h) => subjectByDoc[h.chunk.docId] === subject), 3);
+      setQas((prev) => prev.map((x) => (x.id === id ? { ...x, hits, subject } : x)));
       const best = hits[0]?.score ?? 0;
       let answer: string;
       if (best < 0.22) { // off-topic questions score ~0.18 with EmbeddingGemma; on-topic ≥0.3
         answer = NOT_FOUND;
         setQas((prev) => prev.map((x) => (x.id === id ? { ...x, answer } : x)));
       } else {
-        answer = cleanAnswer(
-          await generate(buildAnswerPrompt(q, hits), (txt) =>
-            setQas((prev) => prev.map((x) => (x.id === id ? { ...x, answer: cleanAnswer(txt) } : x))),
-          ),
-        );
+        setBusy(null);
+        setGenerating(true);
+        try {
+          answer = cleanAnswer(
+            await generate(
+              buildAnswerPrompt(q, hits),
+              (txt) => setQas((prev) => prev.map((x) => (x.id === id ? { ...x, answer: cleanAnswer(txt) } : x))),
+              { maxTokens: 220 },
+            ),
+          );
+        } finally {
+          setGenerating(false);
+        }
       }
       if (answer.replace(/[^a-z0-9]/gi, '').length < 3) {
         // Rare empty reply from the small model: fall back to the best passage, clearly labelled.
@@ -354,7 +434,7 @@ function Main() {
       setQas((prev) =>
         prev.map((x) => (x.id === id ? { ...x, answer: answer || NOT_FOUND, hits: notFound ? [] : hits, done: true, ms: Date.now() - t0 } : x)),
       );
-    });
+    }, 'llm');
     setQas((prev) => prev.map((x) => (x.id === id ? { ...x, done: true } : x)));
   }
 
@@ -362,18 +442,19 @@ function Main() {
   const [quiz, setQuiz] = useState<QuizCard[]>([]);
 
   async function makeQuiz() {
-    if (!chunks.length) {
-      Alert.alert('No notes yet', 'Import some notes first (or add the sample notes).');
+    const pool = chunksIn(scopeValid);
+    if (!pool.length) {
+      Alert.alert('No notes yet', 'Add some notes first (or try the sample notes).');
       return;
     }
     setQuiz([]);
     await guarded('Writing quiz…', async () => {
-      const excerpts = pickQuizExcerpts(chunks, 4);
+      const excerpts = pickQuizExcerpts(pool, 4);
       const asked: string[] = [];
       for (let i = 0; i < excerpts.length; i++) {
         setBusy(`Writing question ${i + 1} of ${excerpts.length}…`);
         const raw = await generate(buildOneQuestionPrompt(excerpts[i].text, asked), () => {}, {
-          maxTokens: 160,
+          maxTokens: 120,
           temp: 0.5,
           jsonSchema: ONE_QUESTION_SCHEMA,
         });
@@ -385,18 +466,19 @@ function Main() {
           { id: makeId('z'), ...q, source: excerpts[i], docName: docNames[excerpts[i].docId] ?? 'Notes', revealed: false },
         ]);
       }
-    });
+    }, 'llm');
   }
 
   // ---------- Render ----------
   if (phase !== 'ready') {
     return (
-      <SafeAreaView style={s.safe}>
-        <StatusBar style="dark" />
+      <SafeAreaView style={[s.safe, s.hero]}>
+        <StatusBar style="light" />
         <ScrollView contentContainerStyle={s.setup}>
-          <Text style={s.logo}>📘</Text>
-          <Text style={s.title}>Offline Study Tutor</Text>
-          <Text style={s.sub}>Ask your class notes anything. Answers come only from your notes, and the AI runs entirely on your phone.</Text>
+          <BrandMark />
+          <Text style={s.title}>Study Tutor</Text>
+          <Text style={s.tagline}>Your notes. Your tutor. No signal needed.</Text>
+          <Text style={s.sub}>Ask your class notes anything and get answers straight from them, with the AI running entirely on your phone.</Text>
           {phase === 'needDownload' || phase === 'downloading' ? (
             <View style={s.card}>
               <Text style={s.h2}>One-time setup</Text>
@@ -473,11 +555,12 @@ function Main() {
               </Pressable>
             </View>
           ) : (
-            <View style={[s.card, { alignItems: 'center' }]}>
-              <ActivityIndicator color={C.primary} size="large" />
-              <Text style={[s.body, { marginTop: 12 }]}>{phaseMsg}</Text>
+            <View style={{ alignItems: 'center', marginTop: 28 }}>
+              <ActivityIndicator color="#A5B4FC" />
+              <Text style={[s.heroSmall, { marginTop: 10 }]}>{phaseMsg}</Text>
             </View>
           )}
+          <Credit dark />
         </ScrollView>
         <PdfExtractor ref={pdf} />
       </SafeAreaView>
@@ -491,14 +574,21 @@ function Main() {
         <View style={{ flex: 1 }}>
           <Text style={s.headerTitle}>Study Tutor</Text>
           <Text style={s.small}>
-            {docs.length} note{docs.length === 1 ? '' : 's'} · {chunks.length} passages · {device.toUpperCase()}
+            {subjects.length} subject{subjects.length === 1 ? '' : 's'} · {docs.length} note{docs.length === 1 ? '' : 's'} · {device.toUpperCase()}
           </Text>
         </View>
-        <View style={[s.chip, online === false ? s.chipOffline : s.chipOnline]}>
-          <Text style={[s.chipText, online === false ? { color: C.okText } : null]}>
-            {online === false ? '✈ Offline · on-device AI' : '● On-device AI'}
-          </Text>
-        </View>
+        {ai !== 'ready' ? (
+          <View style={[s.chip, s.chipOnline, { flexDirection: 'row', alignItems: 'center', gap: 6 }]}>
+            <ActivityIndicator size="small" color={C.primary} />
+            <Text style={s.chipText}>AI warming up</Text>
+          </View>
+        ) : (
+          <View style={[s.chip, online === false ? s.chipOffline : s.chipOnline]}>
+            <Text style={[s.chipText, online === false ? { color: C.okText } : null]}>
+              {online === false ? '✈ Offline · on-device AI' : '● On-device AI'}
+            </Text>
+          </View>
+        )}
       </View>
 
       {ocrMissing && !justDownloaded && tab === 'notes' && (
@@ -518,7 +608,7 @@ function Main() {
             <View style={s.actions}>
               <ActionBtn icon="📄" label="Import PDF / text" onPress={importFile} disabled={!!busy} />
               <ActionBtn icon="📷" label="Snap notes" onPress={snapNotes} disabled={!!busy} />
-              <ActionBtn icon="📋" label="Paste text" onPress={() => setEditor({ mode: 'paste', title: '', text: '' })} disabled={!!busy} />
+              <ActionBtn icon="📋" label="Paste text" onPress={() => setEditor({ mode: 'paste', title: '', text: '', subject: subjects[0] ?? '' })} disabled={!!busy} />
             </View>
             {docs.length === 0 ? (
               <View style={s.card}>
@@ -529,24 +619,29 @@ function Main() {
                 </Pressable>
               </View>
             ) : (
-              docs.map((d) => (
-                <View key={d.id} style={s.docRow}>
-                  <Text style={s.docIcon}>{d.kind === 'pdf' ? '📄' : d.kind === 'pasted' ? '📋' : '📝'}</Text>
-                  <View style={{ flex: 1 }}>
-                    <Text style={s.docName} numberOfLines={2}>{d.name}</Text>
-                    <Text style={s.small}>{d.chunkCount} passages · {(d.charCount / 1000).toFixed(1)}k chars</Text>
-                  </View>
-                  <Pressable
-                    hitSlop={10}
-                    onPress={() =>
-                      Alert.alert('Remove notes?', d.name, [
-                        { text: 'Cancel', style: 'cancel' },
-                        { text: 'Remove', style: 'destructive', onPress: async () => { await removeDoc(d.id); await refreshLibrary(); } },
-                      ])
-                    }
-                  >
-                    <Text style={s.del}>✕</Text>
-                  </Pressable>
+              subjects.map((sub) => (
+                <View key={sub} style={{ marginTop: 16 }}>
+                  <Text style={s.groupHead}>{sub}</Text>
+                  {docs.filter((d) => subjectOf(d) === sub).map((d) => (
+                    <Pressable key={d.id} style={s.docRow} onPress={() => moveDoc(d)}>
+                      <Text style={s.docIcon}>{d.kind === 'pdf' ? '📄' : d.kind === 'pasted' ? '📋' : '📝'}</Text>
+                      <View style={{ flex: 1 }}>
+                        <Text style={s.docName} numberOfLines={2}>{d.name}</Text>
+                        <Text style={s.small}>{d.chunkCount} passages · tap to change subject</Text>
+                      </View>
+                      <Pressable
+                        hitSlop={10}
+                        onPress={() =>
+                          Alert.alert('Remove notes?', d.name, [
+                            { text: 'Cancel', style: 'cancel' },
+                            { text: 'Remove', style: 'destructive', onPress: async () => { await removeDoc(d.id); await refreshLibrary(); } },
+                          ])
+                        }
+                      >
+                        <Text style={s.del}>✕</Text>
+                      </Pressable>
+                    </Pressable>
+                  ))}
                 </View>
               ))
             )}
@@ -554,7 +649,7 @@ function Main() {
               <Text style={s.h3}>Privacy & offline</Text>
               <Text style={s.small}>
                 Notes, embeddings and answers never leave this phone. The models ({MODELS.map((m) => m.label).join(', ')} and QVAC OCR) run locally through
-                Tether's QVAC SDK. Internet is only used once, to download the models.
+                Tether's QVAC SDK. Internet is only used once, to download the models. If answers feel slow, try GPU.
               </Text>
               <View style={s.segment}>
                 <Text style={[s.small, { marginRight: 8 }]}>Compute:</Text>
@@ -577,11 +672,13 @@ function Main() {
                 </Pressable>
               )}
             </View>
+            <Credit />
           </ScrollView>
         )}
 
         {tab === 'ask' && (
           <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+            {subjects.length > 0 && <SubjectChips subjects={subjects} value={scopeValid} onChange={setScope} />}
             <FlatList
               ref={listRef}
               data={qas}
@@ -591,7 +688,9 @@ function Main() {
               ListEmptyComponent={
                 <View style={s.card}>
                   <Text style={s.h2}>Ask your notes</Text>
-                  <Text style={s.body}>Questions are answered only from your notes, with the exact passages shown as sources.</Text>
+                  <Text style={s.body}>
+                    Pick a subject above, or leave it on Auto and the tutor finds the right subject for each question. Answers never mix subjects.
+                  </Text>
                   {chunks.length > 0 &&
                     ['Summarise the main ideas', 'What are the key definitions?'].map((ex) => (
                       <Pressable key={ex} onPress={() => setQuestion(ex)} style={s.suggest}>
@@ -600,6 +699,7 @@ function Main() {
                     ))}
                 </View>
               }
+              keyboardShouldPersistTaps="handled"
               renderItem={({ item }) => <QACard qa={item} />}
             />
             <View style={s.inputRow}>
@@ -609,27 +709,34 @@ function Main() {
                 onChangeText={setQuestion}
                 placeholder={chunks.length ? 'Ask about your notes…' : 'Import notes first'}
                 placeholderTextColor={C.muted}
-                editable={!busy}
+                editable={!busy && !generating}
                 multiline
                 onSubmitEditing={ask}
                 returnKeyType="send"
                 blurOnSubmit
               />
-              <Pressable style={[s.send, (!question.trim() || !!busy) && s.btnDisabled]} disabled={!question.trim() || !!busy} onPress={ask}>
-                <Text style={s.sendText}>Ask</Text>
-              </Pressable>
+              {generating ? (
+                <Pressable style={[s.send, { backgroundColor: C.danger }]} onPress={stopGenerating}>
+                  <Text style={s.sendText}>Stop</Text>
+                </Pressable>
+              ) : (
+                <Pressable style={[s.send, (!question.trim() || !!busy) && s.btnDisabled]} disabled={!question.trim() || !!busy} onPress={ask}>
+                  <Text style={s.sendText}>Ask</Text>
+                </Pressable>
+              )}
             </View>
           </KeyboardAvoidingView>
         )}
 
         {tab === 'quiz' && (
           <ScrollView contentContainerStyle={s.pad}>
+            {subjects.length > 1 && <SubjectChips subjects={subjects} value={scopeValid} onChange={setScope} autoLabel="All" inline />}
             <Pressable style={[s.btn, (!!busy || !chunks.length) && s.btnDisabled]} disabled={!!busy || !chunks.length} onPress={makeQuiz}>
               <Text style={s.btnText}>{quiz.length ? '🔄 New quiz' : '🧠 Quiz me'}</Text>
             </Pressable>
             {!quiz.length && !busy && (
               <Text style={[s.small, { textAlign: 'center', marginTop: 12 }]}>
-                {chunks.length ? 'Generates 4 questions from different parts of your notes.' : 'Import notes first.'}
+                {chunks.length ? `Generates 4 questions from ${scopeValid === AUTO ? 'all your notes' : scopeValid}.` : 'Add notes first.'}
               </Text>
             )}
             {quiz.map((q, i) => (
@@ -705,6 +812,8 @@ function Main() {
                 placeholder="e.g. Week 3 — Cell biology"
                 placeholderTextColor={C.muted}
               />
+              <Text style={s.label}>Subject</Text>
+              <SubjectSelect subjects={subjects} value={editor?.subject ?? ''} onChange={(v) => setEditor((e) => (e ? { ...e, subject: v } : e))} />
               <Text style={s.label}>Text</Text>
               <TextInput
                 style={[s.field, s.area]}
@@ -723,8 +832,96 @@ function Main() {
         </SafeAreaView>
       </Modal>
 
+      <Modal visible={!!picker} transparent animationType="fade" onRequestClose={() => closePicker(null)}>
+        <Pressable style={s.scrim} onPress={() => closePicker(null)}>
+          <Pressable style={s.sheet} onPress={() => {}}>
+            <Text style={s.h2}>{picker?.title}</Text>
+            <SubjectSelect subjects={subjects} value={picker?.value ?? ''} onChange={(v) => setPicker((p) => (p ? { ...p, value: v } : p))} />
+            <Pressable style={s.btn} onPress={() => closePicker(picker?.value ?? '')}>
+              <Text style={s.btnText}>Continue</Text>
+            </Pressable>
+            <Pressable style={{ alignItems: 'center', marginTop: 12 }} onPress={() => closePicker(null)} hitSlop={8}>
+              <Text style={[s.small, { fontWeight: '600' }]}>Cancel</Text>
+            </Pressable>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
       <PdfExtractor ref={pdf} />
     </SafeAreaView>
+  );
+}
+
+function BrandMark() {
+  return (
+    <View style={s.brand}>
+      <Text style={s.brandText}>S</Text>
+      <View style={s.brandDot} />
+    </View>
+  );
+}
+
+function Credit({ dark }: { dark?: boolean }) {
+  return (
+    <View style={{ alignItems: 'center', marginTop: 28, marginBottom: 8 }}>
+      <Text style={[s.credit, dark && { color: '#C7D2FE' }]}>
+        Created by <Text style={{ fontWeight: '800', color: dark ? '#FFFFFF' : C.primary }}>Avie</Text>
+      </Text>
+      <Text style={[s.creditSub, dark && { color: '#7C86B2' }]}>Powered by Tether QVAC · 100% on-device</Text>
+    </View>
+  );
+}
+
+function SubjectChips({
+  subjects,
+  value,
+  onChange,
+  autoLabel = 'Auto',
+  inline,
+}: {
+  subjects: string[];
+  value: string;
+  onChange: (v: string) => void;
+  autoLabel?: string;
+  inline?: boolean;
+}) {
+  return (
+    <View style={inline ? undefined : s.chipBar}>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingHorizontal: inline ? 0 : 16, paddingVertical: inline ? 0 : 10 }}>
+        {[AUTO, ...subjects].map((sub) => {
+          const on = value === sub;
+          return (
+            <Pressable key={sub} onPress={() => onChange(sub)} style={[s.pill, on && s.pillOn]}>
+              <Text style={[s.pillText, on && s.pillTextOn]}>{sub === AUTO ? (autoLabel === 'Auto' ? '✨ Auto' : autoLabel) : sub}</Text>
+            </Pressable>
+          );
+        })}
+      </ScrollView>
+    </View>
+  );
+}
+
+function SubjectSelect({ subjects, value, onChange }: { subjects: string[]; value: string; onChange: (v: string) => void }) {
+  return (
+    <View>
+      {subjects.length > 0 && (
+        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 10 }}>
+          {subjects.map((sub) => (
+            <Pressable key={sub} onPress={() => onChange(sub)} style={[s.pill, value === sub && s.pillOn]}>
+              <Text style={[s.pillText, value === sub && s.pillTextOn]}>{sub}</Text>
+            </Pressable>
+          ))}
+        </View>
+      )}
+      <TextInput
+        style={s.field}
+        value={value}
+        onChangeText={onChange}
+        placeholder={subjects.length ? 'Or type a new subject' : 'e.g. Biology, Economics, Maths'}
+        placeholderTextColor={C.muted}
+        autoCapitalize="words"
+      />
+    </View>
   );
 }
 
@@ -788,34 +985,66 @@ function SourceCard({ n, docName, page, text }: { n: number; docName: string; pa
   );
 }
 
-function QACard({ qa }: { qa: QA }) {
+const QACard = memo(function QACard({ qa }: { qa: QA }) {
+  const [all, setAll] = useState(false);
+  const shown = all ? qa.hits : qa.hits.slice(0, 1);
   return (
     <View style={{ marginBottom: 14 }}>
       <View style={s.qBubble}>
         <Text style={s.qBubbleText}>{qa.question}</Text>
       </View>
       <View style={s.aBubble}>
-        {qa.answer ? <Text style={s.body}>{qa.answer}</Text> : <ActivityIndicator color={C.primary} />}
+        {qa.subject ? <Text style={s.fromTag}>From {qa.subject}</Text> : null}
+        {qa.answer ? (
+          <Text style={s.body}>{qa.answer}</Text>
+        ) : (
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            <ActivityIndicator color={C.primary} size="small" />
+            <Text style={s.small}>{qa.hits.length ? 'Writing answer…' : 'Searching your notes…'}</Text>
+          </View>
+        )}
         {qa.done && qa.hits.length > 0 && (
           <>
-            <Text style={s.sourcesLabel}>Sources from your notes</Text>
-            {qa.hits.map((h, i) => (
+            <Text style={s.sourcesLabel}>Source</Text>
+            {shown.map((h, i) => (
               <SourceCard key={h.chunk.id} n={i + 1} docName={h.docName} page={h.chunk.page} text={h.chunk.text} />
             ))}
+            {qa.hits.length > 1 && (
+              <Pressable onPress={() => setAll((x) => !x)} hitSlop={6}>
+                <Text style={s.moreLink}>{all ? 'Show less' : `Show ${qa.hits.length - 1} more source${qa.hits.length > 2 ? 's' : ''}`}</Text>
+              </Pressable>
+            )}
           </>
         )}
         {qa.done && qa.ms ? <Text style={s.meta}>Answered on-device in {(qa.ms / 1000).toFixed(1)}s</Text> : null}
       </View>
     </View>
   );
-}
+});
 
 const s = StyleSheet.create({
   safe: { flex: 1, backgroundColor: C.bg },
-  setup: { padding: 22, paddingTop: 40 },
-  logo: { fontSize: 54, textAlign: 'center' },
-  title: { fontSize: 26, fontWeight: '800', color: C.text, textAlign: 'center', marginTop: 8 },
-  sub: { fontSize: 15, color: C.muted, textAlign: 'center', marginTop: 8, marginBottom: 20, lineHeight: 21 },
+  hero: { backgroundColor: '#0E1330' },
+  setup: { padding: 22, paddingTop: 56, flexGrow: 1 },
+  brand: { width: 72, height: 72, borderRadius: 22, backgroundColor: C.primary, alignSelf: 'center', alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#6366F1' },
+  brandText: { color: '#fff', fontSize: 38, fontWeight: '900', letterSpacing: -1 },
+  brandDot: { position: 'absolute', right: 12, top: 12, width: 10, height: 10, borderRadius: 5, backgroundColor: C.accent },
+  title: { fontSize: 30, fontWeight: '800', color: '#FFFFFF', textAlign: 'center', marginTop: 18, letterSpacing: -0.5 },
+  tagline: { fontSize: 16, fontWeight: '700', color: '#A5B4FC', textAlign: 'center', marginTop: 6 },
+  sub: { fontSize: 14.5, color: '#9AA3C7', textAlign: 'center', marginTop: 10, marginBottom: 20, lineHeight: 21, paddingHorizontal: 8 },
+  heroSmall: { fontSize: 13.5, color: '#C7D2FE', textAlign: 'center' },
+  credit: { fontSize: 13, color: C.muted },
+  creditSub: { fontSize: 11, color: C.muted, marginTop: 3, opacity: 0.8 },
+  chipBar: { borderBottomWidth: 1, borderBottomColor: C.border, backgroundColor: C.card },
+  pill: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20, backgroundColor: C.bg, borderWidth: 1, borderColor: C.border, marginBottom: 4 },
+  pillOn: { backgroundColor: C.primary, borderColor: C.primary },
+  pillText: { fontSize: 13, fontWeight: '600', color: C.text },
+  pillTextOn: { color: '#fff' },
+  groupHead: { fontSize: 12, fontWeight: '800', color: C.muted, textTransform: 'uppercase', letterSpacing: 0.8 },
+  fromTag: { alignSelf: 'flex-start', fontSize: 11, fontWeight: '700', color: C.primary, backgroundColor: C.primarySoft, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 10, marginBottom: 8, overflow: 'hidden' },
+  moreLink: { fontSize: 12.5, fontWeight: '700', color: C.primary, marginTop: 8 },
+  scrim: { flex: 1, backgroundColor: 'rgba(14,19,48,0.55)', justifyContent: 'flex-end' },
+  sheet: { backgroundColor: C.card, borderTopLeftRadius: 22, borderTopRightRadius: 22, padding: 20, paddingBottom: 28 },
   card: { backgroundColor: C.card, borderRadius: 16, padding: 16, marginTop: 12, borderWidth: 1, borderColor: C.border },
   h2: { fontSize: 18, fontWeight: '700', color: C.text, marginBottom: 6 },
   h3: { fontSize: 15, fontWeight: '700', color: C.text, marginBottom: 4 },

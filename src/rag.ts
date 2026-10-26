@@ -52,16 +52,27 @@ export function search(
 
 export const NOT_FOUND = "I couldn't find that in your notes.";
 
+/**
+ * Keeps only the passages that are really about the question: the best one, plus any others
+ * that score almost as well. Fewer, sharper passages = shorter prompt (faster on a phone) and
+ * answers that stick to exactly what was asked.
+ */
+export function focusHits(hits: Hit[], max = 3, margin = 0.06): Hit[] {
+  if (!hits.length) return hits;
+  const best = hits[0].score;
+  return hits.filter((h, i) => i === 0 || h.score >= best - margin).slice(0, max);
+}
+
 export function buildAnswerPrompt(question: string, hits: Hit[]) {
   const context = hits
     .map((h, i) => `[${i + 1}] ${h.chunk.text}`)
     .join('\n\n');
   const system =
-    'You are a friendly study tutor. Answer the student\'s question using ONLY the numbered note excerpts provided. ' +
-    'Write a clear, complete answer in 1-4 sentences of plain prose. Put the excerpt number in square brackets after the fact it supports, for example: "The Calvin cycle takes place in the stroma [2]." Never repeat yourself. ' +
-    'Use only facts stated in the excerpts, never outside knowledge. If the excerpts mention the topic, answer from them even if the answer is partial. ' +
-    `Only if none of the excerpts is about the question, reply exactly: "${NOT_FOUND}"`;
-  const user = `Question: ${question}\n\nNote excerpts:\n${context}\n\nQuestion: ${question}\nAnswer (from the excerpts only):`;
+    'You are a study tutor. Answer ONLY the exact question asked, using ONLY the numbered note excerpts. ' +
+    'Be short and direct: 1-3 sentences. Do not add other facts from the excerpts that the question did not ask about. ' +
+    'Put the excerpt number in square brackets after the fact it supports, e.g. "It happens in the stroma [2]." ' +
+    `If no excerpt answers the question, reply exactly: "${NOT_FOUND}"`;
+  const user = `Note excerpts:\n${context}\n\nQuestion: ${question}\nShort answer:`;
   return [
     { role: 'system' as const, content: system },
     { role: 'user' as const, content: user },
