@@ -37,6 +37,7 @@ import {
 import { OCR_APPROX_MB, downloadOcr, recognise, type OcrResult } from './src/ocr';
 import {
   NOT_FOUND,
+  cleanAnswer,
   ONE_QUESTION_SCHEMA,
   buildAnswerPrompt,
   buildOneQuestionPrompt,
@@ -244,7 +245,7 @@ function Main() {
     await guarded('Thinking…', async () => {
       setQas((prev) => [...prev, { id, question: q, answer: '', hits: [], done: false }]);
       const qv = await embedQuery(q);
-      const hits = search(qv, q, chunks, docNames, 4);
+      const hits = search(qv, q, chunks, docNames, 3);
       setQas((prev) => prev.map((x) => (x.id === id ? { ...x, hits } : x)));
       const best = hits[0]?.score ?? 0;
       let answer: string;
@@ -252,9 +253,15 @@ function Main() {
         answer = NOT_FOUND;
         setQas((prev) => prev.map((x) => (x.id === id ? { ...x, answer } : x)));
       } else {
-        answer = await generate(buildAnswerPrompt(q, hits), (txt) =>
-          setQas((prev) => prev.map((x) => (x.id === id ? { ...x, answer: txt } : x))),
+        answer = cleanAnswer(
+          await generate(buildAnswerPrompt(q, hits), (txt) =>
+            setQas((prev) => prev.map((x) => (x.id === id ? { ...x, answer: cleanAnswer(txt) } : x))),
+          ),
         );
+      }
+      if (answer.replace(/[^a-z0-9]/gi, '').length < 3) {
+        // Rare empty reply from the small model: fall back to the best passage, clearly labelled.
+        answer = `Here is the most relevant part of your notes [1]:\n“${hits[0]?.chunk.text.slice(0, 400) ?? ''}”`;
       }
       const notFound = answer.toLowerCase().includes("couldn't find that in your notes");
       setQas((prev) =>

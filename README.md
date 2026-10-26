@@ -68,7 +68,7 @@ Files and photos are opened with the Android system picker (Storage Access Frame
 
 ## Install (Android phone, arm64, Android 10+)
 
-1. Download `StudyTutor-v1.0.1.apk` to the phone.
+1. Download `StudyTutor-v1.0.2.apk` to the phone.
 2. Open it. If asked, allow your browser or file manager to *install unknown apps*, then tap **Install**.
 3. Open **Study Tutor**. On **Wi‑Fi**, tap **Download AI models** (≈1.15 GB, one time).
 4. When you see **"All set!"** you can switch on airplane mode. Everything keeps working.

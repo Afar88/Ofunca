@@ -54,13 +54,14 @@ export const NOT_FOUND = "I couldn't find that in your notes.";
 
 export function buildAnswerPrompt(question: string, hits: Hit[]) {
   const context = hits
-    .map((h, i) => `[${i + 1}] (${h.docName}${h.chunk.page ? `, p.${h.chunk.page}` : ''})\n${h.chunk.text}`)
+    .map((h, i) => `[${i + 1}] ${h.chunk.text}`)
     .join('\n\n');
   const system =
     'You are a friendly study tutor. Answer the student\'s question using ONLY the numbered note excerpts provided. ' +
-    'Be clear and concise (2-5 sentences or a short list). After each fact, cite the excerpt number in square brackets like [1]. ' +
-    `If the excerpts do not contain the answer, reply exactly: "${NOT_FOUND}" Do not use outside knowledge.`;
-  const user = `Note excerpts:\n\n${context}\n\nQuestion: ${question}\n\nAnswer using only the excerpts, with [n] citations:`;
+    'Write a clear, complete answer in 1-4 sentences of plain prose. Put the excerpt number in square brackets after the fact it supports, for example: "The Calvin cycle takes place in the stroma [2]." Never repeat yourself. ' +
+    'Use only facts stated in the excerpts, never outside knowledge. If the excerpts mention the topic, answer from them even if the answer is partial. ' +
+    `Only if none of the excerpts is about the question, reply exactly: "${NOT_FOUND}"`;
+  const user = `Question: ${question}\n\nNote excerpts:\n${context}\n\nQuestion: ${question}\nAnswer (from the excerpts only):`;
   return [
     { role: 'system' as const, content: system },
     { role: 'user' as const, content: user },
@@ -171,4 +172,12 @@ export function parseOneQuestion(raw: string): { question: string; answer: strin
     }
   } catch {}
   return null;
+}
+
+/** Tidies small-model quirks: a stray leading "[n]" and duplicated citations. */
+export function cleanAnswer(text: string): string {
+  return text
+    .replace(/^\s*(\[\d+\]\s*)+/, '')
+    .replace(/(\[\d+\])(\s*\1)+/g, '$1')
+    .trim();
 }
