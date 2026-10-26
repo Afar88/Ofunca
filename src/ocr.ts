@@ -1,23 +1,29 @@
 // "Snap notes": on-device OCR of a photographed page via QVAC's OCR engine.
 // The detector + Latin recogniser models are downloaded with the other models
 // and run locally, so this works in airplane mode too.
-import { downloadAsset, loadModel, ocr, unloadModel, OCR_LATIN, type ModelProgressUpdate } from '@qvac/sdk';
+import { loadModel, ocr, unloadModel, OCR_LATIN } from '@qvac/sdk';
 import * as ImageManipulator from 'expo-image-manipulator';
+import { downloadModels, modelsCached } from './qvac';
+import type { DlState } from './modelDownload';
 
 export const OCR_MODEL = OCR_LATIN;
 export const OCR_APPROX_MB = 98; // recogniser (~15 MB) + CRAFT text detector (~83 MB)
 
 let ocrId: string | null = null;
 
-export async function downloadOcr(onProgress: (pct: number, mb?: string) => void) {
-  await downloadAsset({
-    assetSrc: OCR_MODEL,
-    onProgress: (p: ModelProgressUpdate) => {
-      const mb = p.total ? `${(p.downloaded / 1e6).toFixed(0)} / ${(p.total / 1e6).toFixed(0)} MB` : undefined;
-      onProgress(Math.round(p.percentage ?? 0), mb);
-    },
-  });
-  onProgress(100);
+/** True when both OCR files (recogniser + detector) are on the phone. */
+export async function ocrCached() {
+  const c = await modelsCached();
+  return c.ocrRec && c.ocrDet;
+}
+
+/**
+ * Downloads the recogniser AND the CRAFT detector. The detector used to be fetched lazily on the first
+ * OCR load, which needed internet; now both are cached up front so Snap notes works in airplane mode.
+ */
+export async function downloadOcr(onState: (key: 'ocrRec' | 'ocrDet', s: DlState) => void) {
+  const r = await downloadModels(['ocrRec', 'ocrDet'], onState as any);
+  if (r.failedOptional.length) throw new Error('Could not download the OCR model. Check your connection and try again.');
 }
 
 async function ensureOcr() {

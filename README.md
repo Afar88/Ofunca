@@ -29,7 +29,7 @@ All inference goes through `@qvac/sdk` (v0.22) running in a Bare worker inside t
 
 | QVAC API | Used for |
 |---|---|
-| `downloadAsset()` | One-time model download with progress (setup screen) |
+| `downloadAsset()` | One-time model download with per-model progress (setup screen). Llama and EmbeddingGemma come from a commit-pinned Hugging Face HTTPS mirror of the exact catalog file (QVAC's HTTP loader resumes with Range requests and verifies the Hub SHA-256, which equals the catalog checksum), with the QVAC registry as the second route. OCR comes from the QVAC registry. See `src/modelDownload.ts` |
 | `getModelInfo()` | Checks whether models are already cached, so later launches skip the network entirely |
 | `loadModel({ modelType: 'embeddings' })` + `embed()` | EmbeddingGemma 300M Q4_0 (768-dim) for passages (`title: none \| text:` prompt) and questions (`task: search result \| query:` prompt) |
 | `loadModel({ modelType: 'llm' })` + `completion()` | Llama 3.2 1B Instruct Q4_0, 4k context, streaming tokens via `run.events` |
@@ -43,8 +43,16 @@ All inference goes through `@qvac/sdk` (v0.22) running in a Bare worker inside t
 |---|---|---|
 | Llama 3.2 1B Instruct Q4_0 | `LLAMA_3_2_1B_INST_Q4_0` | 773 MB |
 | EmbeddingGemma 300M Q4_0 | `EMBEDDINGGEMMA_300M_Q4_0` | 278 MB |
-| QVAC OCR Latin + CRAFT detector | `OCR_LATIN` | ~98 MB |
+| QVAC OCR Latin + CRAFT detector | `OCR_LATIN` + `OCR_CRAFT` | ~98 MB |
 | **Total** | | **≈ 1.15 GB** |
+
+### Slow or flaky networks (v1.0.3)
+
+- Finished models are never downloaded again; a partly downloaded model continues from the bytes already saved (HTTP Range resume), including after the app is closed.
+- Automatic retries with backoff (3 s up to 90 s), waiting for the phone to come back online; the screen is kept awake while downloading.
+- Longer QVAC timeouts for mobile data (`registryStreamTimeoutMs` 120 s, `registryDownloadMaxRetries` 6, `httpConnectionTimeoutMs` 30 s), written to the runtime `qvac.config.json` before the SDK starts.
+- **Import model file:** download the `.gguf` in Chrome (links on the setup screen), then pick it with the system file picker. The app matches it by exact size, copies it into the QVAC cache and QVAC checks the catalog SHA-256 before it is used. No storage permission needed.
+- OCR is optional for setup: if it fails, the app still starts and fetches OCR the first time you tap *Snap notes*.
 
 The models load comfortably side by side on a phone with 8 GB of RAM (tested target: Redmi Note 13, 8 GB).
 
@@ -68,7 +76,7 @@ Files and photos are opened with the Android system picker (Storage Access Frame
 
 ## Install (Android phone, arm64, Android 10+)
 
-1. Download `StudyTutor-v1.0.2.apk` to the phone.
+1. Download `StudyTutor-v1.0.3.apk` to the phone.
 2. Open it. If asked, allow your browser or file manager to *install unknown apps*, then tap **Install**.
 3. Open **Study Tutor**. On **Wi‑Fi**, tap **Download AI models** (≈1.15 GB, one time).
 4. When you see **"All set!"** you can switch on airplane mode. Everything keeps working.
@@ -95,7 +103,8 @@ Note: QVAC/llama.cpp does not run on Android emulators. Use a physical arm64 dev
 
 ```
 App.tsx                    UI: setup/download, Notes, Ask, Quiz, paste and OCR editor
-src/qvac.ts                QVAC: download, cache check, load, embed, streaming completion
+src/qvac.ts                QVAC: model list + mirrors, cache check, load, embed, streaming completion, file import
+src/modelDownload.ts       Resilient download: cache check, HTTPS mirror with resume, registry fallback, retries
 src/ocr.ts                 QVAC OCR "Snap notes" with line grouping and confidence
 src/rag.ts                 hybrid retrieval, grounded answer prompt, quiz prompts and parsing
 src/chunk.ts               sentence-aware overlapping chunker

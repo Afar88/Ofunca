@@ -4,6 +4,7 @@
 // Models are downloaded once (the only time the network is used) and then
 // loaded from the local QVAC cache, so every feature works in airplane mode.
 import {
+  cancel,
   completion,
   downloadAsset,
   embed,
@@ -12,17 +13,72 @@ import {
   unloadModel,
   EMBEDDINGGEMMA_300M_Q4_0,
   LLAMA_3_2_1B_INST_Q4_0,
+  OCR_CRAFT,
+  OCR_LATIN,
   VERBOSITY,
-  type ModelProgressUpdate,
 } from '@qvac/sdk';
+import * as FS from 'expo-file-system/legacy';
+import NetInfo from '@react-native-community/netinfo';
+import {
+  ensureModel,
+  matchBySize,
+  savedBytes,
+  type Deps,
+  type DlState,
+  type ModelKey,
+  type ModelSpec,
+} from './modelDownload';
 
 export const LLM_MODEL = LLAMA_3_2_1B_INST_Q4_0;
 export const EMBED_MODEL = EMBEDDINGGEMMA_300M_Q4_0;
 
-export const MODELS = [
-  { key: 'embed', label: 'EmbeddingGemma 300M (Q4_0)', role: 'Understands your notes', src: EMBED_MODEL, approxMB: 278 },
-  { key: 'llm', label: 'Llama 3.2 1B Instruct (Q4_0)', role: 'Writes answers & quizzes', src: LLM_MODEL, approxMB: 773 },
-] as const;
+function spec(key: ModelKey, desc: any, mirrorUrl: string | null, mirrorCacheHash: string | null, optional: boolean): ModelSpec {
+  return {
+    key,
+    name: desc.name,
+    desc,
+    fileName: desc.modelId,
+    expectedSize: desc.expectedSize,
+    sha256: desc.sha256Checksum,
+    mirrorUrl,
+    mirrorCacheHash,
+    optional,
+  };
+}
+
+// Mirrors: the same Hugging Face repo + commit the QVAC catalog entry points at (registryPath), served over
+// HTTPS with Range support. Verified: x-linked-size and x-linked-etag (SHA-256) equal the catalog's
+// expectedSize and sha256Checksum, and a full download hashed to the catalog checksum.
+// mirrorCacheHash = sha256(url).slice(0, 16), the prefix the QVAC SDK gives its HTTP cache file.
+export const MODEL_SPECS: ModelSpec[] = [
+  spec(
+    'embed',
+    EMBEDDINGGEMMA_300M_Q4_0,
+    'https://huggingface.co/unsloth/embeddinggemma-300m-GGUF/resolve/6661a6504c30d8304af13455cb4a5d4f5bc6011f/embeddinggemma-300m-Q4_0.gguf',
+    '72c38be9867f8d88',
+    false,
+  ),
+  spec(
+    'llm',
+    LLAMA_3_2_1B_INST_Q4_0,
+    'https://huggingface.co/unsloth/Llama-3.2-1B-Instruct-GGUF/resolve/b69aef112e9f895e6f98d7ae0949f72ff09aa401/Llama-3.2-1B-Instruct-Q4_0.gguf',
+    'ca1a6d15daaa09d4',
+    false,
+  ),
+  // QVAC-compiled OCR models live only in the QVAC registry (no public mirror of these exact files).
+  spec('ocrRec', OCR_LATIN, null, null, true),
+  spec('ocrDet', OCR_CRAFT, null, null, true),
+];
+
+export const MODEL_GROUPS = [
+  { id: 'embed', label: 'EmbeddingGemma 300M (Q4_0)', role: 'Understands your notes', keys: ['embed'] as ModelKey[] },
+  { id: 'llm', label: 'Llama 3.2 1B Instruct (Q4_0)', role: 'Writes answers & quizzes', keys: ['llm'] as ModelKey[] },
+  { id: 'ocr', label: 'QVAC OCR (Latin + text detector)', role: 'Reads photos of notes (optional)', keys: ['ocrRec', 'ocrDet'] as ModelKey[] },
+];
+
+export const MODELS = MODEL_GROUPS.slice(0, 2).map((g) => ({ ...g, approxMB: Math.round(MODEL_SPECS.find((m) => m.key === g.keys[0])!.expectedSize / 1e6) }));
+
+export const specOf = (k: ModelKey) => MODEL_SPECS.find((m) => m.key === k)!;
 
 export type Device = 'cpu' | 'gpu';
 
@@ -30,37 +86,164 @@ let llmId: string | null = null;
 let embedId: string | null = null;
 let loadedDevice: Device | null = null;
 
-function registryName(src: unknown): string {
-  const s = src as { name?: string; registryPath?: string };
-  return s?.name ?? s?.registryPath ?? String(src);
-}
+const toUri = (p: string) => (p.startsWith('file://') ? p : 'file://' + p);
 
-/** True when both model files are already on the device (no network needed). */
-export async function modelsCached(): Promise<{ embed: boolean; llm: boolean }> {
-  const check = async (src: unknown) => {
-    try {
-      const info = await getModelInfo({ name: registryName(src) } as any);
-      return !!info?.isCached;
-    } catch {
-      return false;
-    }
+/**
+ * Runtime QVAC config, read by the SDK from <documents>/qvac.config.json when its worker starts.
+ * Must be written before the first SDK call. Longer registry stall timeout + more retries for slow
+ * mobile networks, longer HTTP connect timeout, HTTPS only.
+ */
+export async function writeQvacRuntimeConfig() {
+  const cfg = {
+    registryStreamTimeoutMs: 120000,
+    registryDownloadMaxRetries: 6,
+    httpConnectionTimeoutMs: 30000,
+    requireSecureTransport: true,
+    loggerLevel: 'warn',
   };
-  const [e, l] = await Promise.all([check(EMBED_MODEL), check(LLM_MODEL)]);
-  return { embed: e, llm: l };
+  try {
+    await FS.writeAsStringAsync((FS.documentDirectory ?? '') + 'qvac.config.json', JSON.stringify(cfg));
+  } catch {}
 }
 
-/** One-time download of both models (requires internet). Safe to call again: cached files are reused. */
-export async function downloadModels(onProgress: (key: 'embed' | 'llm', pct: number, mb?: string) => void) {
-  for (const m of MODELS) {
-    await downloadAsset({
-      assetSrc: m.src,
-      onProgress: (p: ModelProgressUpdate) => {
-        const mb = p.total ? `${(p.downloaded / 1e6).toFixed(0)} / ${(p.total / 1e6).toFixed(0)} MB` : undefined;
-        onProgress(m.key, Math.round(p.percentage ?? 0), mb);
-      },
-    });
-    onProgress(m.key, 100);
+export const deps: Deps = {
+  getModelInfo: async (name) => {
+    const info: any = await getModelInfo({ name } as any);
+    const f = info?.cacheFiles?.[0];
+    return { isCached: !!info?.isCached, cachePath: f?.path ?? null, partialSize: f?.actualSize };
+  },
+  downloadAsset: (o) => downloadAsset(o),
+  moveFile: async (from, to) => {
+    const f = await FS.getInfoAsync(toUri(from));
+    if (!f.exists) return false;
+    await FS.deleteAsync(toUri(to), { idempotent: true });
+    await FS.moveAsync({ from: toUri(from), to: toUri(to) });
+    return true;
+  },
+  fileSize: async (p) => {
+    try {
+      const f: any = await FS.getInfoAsync(toUri(p));
+      return f.exists ? f.size ?? 0 : null;
+    } catch {
+      return null;
+    }
+  },
+  isOnline: async () => {
+    try {
+      const s = await NetInfo.fetch();
+      return !!s.isConnected && s.isInternetReachable !== false;
+    } catch {
+      return true;
+    }
+  },
+  sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+};
+
+/** Which models are already complete on the device (no network needed). */
+export async function modelsCached(): Promise<Record<ModelKey, boolean>> {
+  const out: any = {};
+  for (const m of MODEL_SPECS) {
+    try {
+      out[m.key] = (await deps.getModelInfo(m.name)).isCached;
+    } catch {
+      out[m.key] = false;
+    }
   }
+  return out;
+}
+
+/** Bytes already on the phone per model (finished or partial), for "Resume" UI. */
+export async function savedProgress(): Promise<Record<ModelKey, { done: boolean; bytes: number }>> {
+  const out: any = {};
+  for (const m of MODEL_SPECS) {
+    try {
+      out[m.key] = await savedBytes(m, deps);
+    } catch {
+      out[m.key] = { done: false, bytes: 0 };
+    }
+  }
+  return out;
+}
+
+let stopRequested = false;
+export function stopDownloads() {
+  stopRequested = true;
+}
+
+/**
+ * Downloads every missing model, one at a time, with retries + resume (see modelDownload.ts).
+ * Required models throw on failure; optional ones (OCR) are reported in the result instead.
+ */
+export async function downloadModels(
+  keys: ModelKey[],
+  onState: (key: ModelKey, s: DlState) => void,
+): Promise<{ failedOptional: ModelKey[] }> {
+  stopRequested = false;
+  const failedOptional: ModelKey[] = [];
+  for (const k of keys) {
+    const m = specOf(k);
+    try {
+      await ensureModel(m, deps, (s) => onState(k, s), { shouldStop: () => stopRequested });
+    } catch (e) {
+      if (m.optional) failedOptional.push(k);
+      else throw e;
+    }
+  }
+  return { failedOptional };
+}
+
+/**
+ * Loads a model file the user downloaded themselves (e.g. in Chrome) through the system file picker.
+ * The file is identified by its exact size, copied into the QVAC cache path, then checked by QVAC
+ * against the catalog SHA-256. No storage permission is needed (Storage Access Framework).
+ */
+export async function importPickedModel(
+  picked: { uri: string; size?: number | null; name?: string },
+  onStatus: (s: string) => void,
+): Promise<ModelSpec> {
+  const m = matchBySize(MODEL_SPECS, picked.size ?? null);
+  if (!m) {
+    throw new Error(
+      `"${picked.name ?? 'This file'}" is not one of the model files (sizes don't match). Pick ${MODEL_SPECS.filter((x) => x.mirrorUrl)
+        .map((x) => x.fileName)
+        .join(' or ')}.`,
+    );
+  }
+  const info = await deps.getModelInfo(m.name);
+  if (info.isCached) return m;
+  if (!info.cachePath) throw new Error('QVAC cache path unavailable');
+  const tmp = info.cachePath + '.import';
+  onStatus(`Copying ${m.fileName}…`);
+  await FS.deleteAsync(toUri(tmp), { idempotent: true });
+  await FS.copyAsync({ from: picked.uri, to: toUri(tmp) });
+  const size = await deps.fileSize(tmp);
+  if (size !== m.expectedSize) {
+    await FS.deleteAsync(toUri(tmp), { idempotent: true });
+    throw new Error('The copy is incomplete. Please try again.');
+  }
+  await deps.moveFile(tmp, info.cachePath);
+  onStatus(`Checking ${m.fileName} (SHA-256)…`);
+  // A cache hit makes QVAC hash the file against the catalog and report 100% at once. A mismatch makes it
+  // delete the file and start a registry download, which we cancel and report as a bad file.
+  let mismatch = false;
+  const op = downloadAsset({
+    assetSrc: m.desc,
+    onProgress: (p: any) => {
+      if (!mismatch && p.total && p.downloaded < p.total) {
+        mismatch = true;
+        cancel({ requestId: op.requestId } as any).catch(() => {});
+      }
+    },
+  });
+  try {
+    await op;
+  } catch {
+    // reported below from the cache state
+  }
+  if (mismatch || !(await deps.getModelInfo(m.name)).isCached) {
+    throw new Error(`${m.fileName} did not match the expected checksum and was removed. Download it again.`);
+  }
+  return m;
 }
 
 /** Loads both models into memory from the local cache. Works offline once downloaded. */

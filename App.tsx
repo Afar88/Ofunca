@@ -4,6 +4,7 @@ import {
   Alert,
   FlatList,
   KeyboardAvoidingView,
+  Linking,
   Modal,
   Platform,
   Pressable,
@@ -18,6 +19,7 @@ import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FS from 'expo-file-system/legacy';
 import NetInfo from '@react-native-community/netinfo';
+import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 
 import { C } from './src/theme';
 import { PdfExtractor, type PdfExtractorHandle } from './src/pdf/PdfExtractor';
@@ -25,16 +27,23 @@ import { chunkPages, chunkText, type RawChunk } from './src/chunk';
 import { addDoc, clearAll, loadDB, makeId, removeDoc, roundVec, type NoteDoc, type StoredChunk } from './src/store';
 import {
   MODELS,
+  MODEL_GROUPS,
+  MODEL_SPECS,
   downloadModels,
   embedDocuments,
   embedQuery,
   generate,
+  importPickedModel,
   isReady,
   loadModels,
   modelsCached,
+  savedProgress,
+  specOf,
+  writeQvacRuntimeConfig,
   type Device,
 } from './src/qvac';
-import { OCR_APPROX_MB, downloadOcr, recognise, type OcrResult } from './src/ocr';
+import { friendlyError, type DlState, type ModelKey } from './src/modelDownload';
+import { OCR_APPROX_MB, downloadOcr, ocrCached, recognise, type OcrResult } from './src/ocr';
 import {
   NOT_FOUND,
   cleanAnswer,
@@ -66,7 +75,11 @@ export default function App() {
 function Main() {
   const [phase, setPhase] = useState<Phase>('checking');
   const [phaseMsg, setPhaseMsg] = useState('Starting on-device AI…');
-  const [dl, setDl] = useState<Record<string, { pct: number; mb?: string }>>({});
+  const [dl, setDl] = useState<Partial<Record<ModelKey, DlState>>>({});
+  const [ocrMissing, setOcrMissing] = useState(false);
+  const [showLinks, setShowLinks] = useState(false);
+  const [importing, setImporting] = useState<string | null>(null);
+  const setKey = useCallback((k: ModelKey, st: DlState) => setDl((d) => ({ ...d, [k]: st })), []);
   const [device, setDevice] = useState<Device>('cpu');
   const [online, setOnline] = useState<boolean | null>(null);
   const [tab, setTab] = useState<Tab>('notes');
@@ -101,8 +114,25 @@ function Main() {
     }
   }, []);
 
+  const refreshSaved = useCallback(async () => {
+    const saved = await savedProgress();
+    setDl((d) => {
+      const out = { ...d };
+      for (const m of MODEL_SPECS) {
+        const sv = saved[m.key];
+        out[m.key] = sv.done
+          ? { status: 'done', downloaded: m.expectedSize, total: m.expectedSize }
+          : { ...(d[m.key] ?? { status: 'idle' }), downloaded: Math.max(sv.bytes, 0), total: m.expectedSize } as DlState;
+      }
+      return out;
+    });
+    return saved;
+  }, []);
+
   useEffect(() => {
     (async () => {
+      // Must run before the first QVAC call: the SDK reads this file when its worker starts.
+      await writeQvacRuntimeConfig();
       await refreshLibrary();
       let dev: Device = 'cpu';
       try {
@@ -112,21 +142,56 @@ function Main() {
       setDevice(dev);
       setPhaseMsg('Checking AI models on this phone…');
       const cached = await modelsCached();
+      setOcrMissing(!(cached.ocrRec && cached.ocrDet));
       if (cached.embed && cached.llm) await bootModels(dev);
-      else setPhase('needDownload');
+      else {
+        await refreshSaved().catch(() => {});
+        setPhase('needDownload');
+      }
     })();
-  }, [bootModels, refreshLibrary]);
+  }, [bootModels, refreshLibrary, refreshSaved]);
 
   async function startDownload() {
+    setPhase('downloading');
+    activateKeepAwakeAsync('model-download').catch(() => {});
     try {
-      setPhase('downloading');
-      await downloadModels((key, pct, mb) => setDl((d) => ({ ...d, [key]: { pct, mb } })));
-      await downloadOcr((pct, mb) => setDl((d) => ({ ...d, ocr: { pct, mb } })));
+      // Finished models are skipped; a partial download continues from the bytes already saved.
+      const r = await downloadModels(['embed', 'llm', 'ocrRec', 'ocrDet'], setKey);
+      setOcrMissing(r.failedOptional.length > 0);
       setJustDownloaded(true);
       await bootModels(device);
     } catch (e: any) {
       setPhase('needDownload');
-      Alert.alert('Download failed', `${e?.message ?? e}\n\nCheck your internet connection and try again.`);
+      await refreshSaved().catch(() => {});
+      Alert.alert(
+        'Download paused',
+        `${friendlyError(e)}\n\nYour progress is saved. Tap "Resume download" when the connection is better (Wi‑Fi helps). You can also download the files in Chrome and use "Import model file".`,
+      );
+    } finally {
+      deactivateKeepAwake('model-download').catch(() => {});
+    }
+  }
+
+  async function importModel() {
+    const res = await DocumentPicker.getDocumentAsync({ type: '*/*', copyToCacheDirectory: false, multiple: false });
+    if (res.canceled || !res.assets?.length) return;
+    const f = res.assets[0];
+    setImporting('Preparing…');
+    try {
+      const m = await importPickedModel({ uri: f.uri, size: f.size, name: f.name }, setImporting);
+      setKey(m.key, { status: 'done', downloaded: m.expectedSize, total: m.expectedSize, source: 'file' });
+      const c = await modelsCached();
+      setOcrMissing(!(c.ocrRec && c.ocrDet));
+      if (c.embed && c.llm) {
+        setJustDownloaded(true);
+        await bootModels(device);
+      } else {
+        Alert.alert('Model imported', `${m.fileName} is ready. ${!c.embed || !c.llm ? 'Import or download the other model to finish setup.' : ''}`);
+      }
+    } catch (e: any) {
+      Alert.alert('Import failed', e?.message ?? String(e));
+    } finally {
+      setImporting(null);
     }
   }
 
@@ -198,6 +263,28 @@ function Main() {
 
   async function snapNotes() {
     // Uses the system file/gallery picker (no camera or storage permission needed).
+    if (ocrMissing && !(await ocrCached())) {
+      if (online === false) {
+        Alert.alert('OCR model not downloaded', `Snap notes needs a one-time ${OCR_APPROX_MB} MB download. Connect to the internet once, then try again.`);
+        return;
+      }
+      let ok = false;
+      await guarded('Downloading OCR model…', async () => {
+        activateKeepAwakeAsync('ocr-download').catch(() => {});
+        try {
+          await downloadOcr((k, st) => {
+            setKey(k, st);
+            const mb = `${(st.downloaded / 1e6).toFixed(0)} / ${(st.total / 1e6).toFixed(0)} MB`;
+            setBusy(st.status === 'waiting' ? `OCR download: ${st.note ?? 'retrying…'}` : `Downloading OCR model (${k === 'ocrRec' ? '1' : '2'}/2)… ${mb}`);
+          });
+          ok = true;
+          setOcrMissing(false);
+        } finally {
+          deactivateKeepAwake('ocr-download').catch(() => {});
+        }
+      });
+      if (!ok) return;
+    }
     const res = await DocumentPicker.getDocumentAsync({ type: ['image/*'], copyToCacheDirectory: true, multiple: false });
     if (res.canceled || !res.assets?.length) return;
     const f = res.assets[0];
@@ -317,20 +404,61 @@ function Main() {
                 Download the on-device AI models once (about {Math.round((MODELS.reduce((a, m) => a + m.approxMB, 0) + OCR_APPROX_MB) / 10) / 100} GB, Wi‑Fi
                 recommended). After that the app works with no internet, even in airplane mode.
               </Text>
-              {[...MODELS.map((m) => ({ key: m.key, label: m.label, role: m.role, mbs: m.approxMB })), { key: 'ocr', label: 'QVAC OCR (Latin)', role: 'Reads photos of notes', mbs: OCR_APPROX_MB }].map((m) => (
-                <View key={m.key} style={s.modelRow}>
-                  <Text style={s.modelName}>{m.label}</Text>
-                  <Text style={s.small}>
-                    {m.role} · ~{m.mbs} MB {dl[m.key]?.mb ? `· ${dl[m.key]!.mb}` : ''}
-                  </Text>
-                  <View style={s.bar}>
-                    <View style={[s.barFill, { width: `${dl[m.key]?.pct ?? 0}%` }]} />
+              {MODEL_GROUPS.map((g) => {
+                const v = groupView(g.keys, dl);
+                return (
+                  <View key={g.id} style={s.modelRow}>
+                    <Text style={s.modelName}>
+                      {v.done ? '✅ ' : ''}
+                      {g.label}
+                    </Text>
+                    <Text style={s.small}>
+                      {g.role} · {v.sizeText}
+                      {v.line ? ` · ${v.line}` : ''}
+                    </Text>
+                    {v.error ? <Text style={[s.small, { color: C.danger }]}>{v.error}</Text> : null}
+                    <View style={s.bar}>
+                      <View style={[s.barFill, { width: `${v.pct}%` }]} />
+                    </View>
                   </View>
-                </View>
-              ))}
-              <Pressable style={[s.btn, phase === 'downloading' && s.btnDisabled]} disabled={phase === 'downloading'} onPress={startDownload}>
-                <Text style={s.btnText}>{phase === 'downloading' ? 'Downloading…' : 'Download AI models'}</Text>
+                );
+              })}
+              <Pressable
+                style={[s.btn, (phase === 'downloading' || !!importing) && s.btnDisabled]}
+                disabled={phase === 'downloading' || !!importing}
+                onPress={startDownload}
+              >
+                <Text style={s.btnText}>
+                  {phase === 'downloading' ? 'Downloading… (keep the app open)' : hasProgress(dl) ? 'Resume download' : 'Download AI models'}
+                </Text>
               </Pressable>
+              {phase !== 'downloading' && (
+                <>
+                  <Pressable style={[s.btnGhost, !!importing && s.btnDisabled]} disabled={!!importing} onPress={importModel}>
+                    <Text style={s.btnGhostText}>{importing ?? 'Import model file (.gguf)'}</Text>
+                  </Pressable>
+                  <Pressable onPress={() => setShowLinks((x) => !x)} hitSlop={8}>
+                    <Text style={[s.small, { color: C.primary, marginTop: 12, textAlign: 'center', fontWeight: '600' }]}>
+                      {showLinks ? 'Hide download links' : 'Slow network? Download the files in your browser'}
+                    </Text>
+                  </Pressable>
+                  {showLinks && (
+                    <View style={{ marginTop: 8 }}>
+                      <Text style={s.small}>
+                        Open each link in Chrome (it can pause and resume), then come back and tap "Import model file". The app checks each file's
+                        SHA-256 before using it.
+                      </Text>
+                      {MODEL_SPECS.filter((m) => m.mirrorUrl).map((m) => (
+                        <Pressable key={m.key} style={s.suggest} onPress={() => Linking.openURL(m.mirrorUrl!)}>
+                          <Text style={s.suggestText}>
+                            ⬇ {m.fileName} ({Math.round(m.expectedSize / 1e6)} MB)
+                          </Text>
+                        </Pressable>
+                      ))}
+                    </View>
+                  )}
+                </>
+              )}
               {online === false && <Text style={s.warn}>You're offline. Connect to the internet for this one-time download.</Text>}
             </View>
           ) : phase === 'error' ? (
@@ -373,6 +501,11 @@ function Main() {
         </View>
       </View>
 
+      {ocrMissing && !justDownloaded && tab === 'notes' && (
+        <Text style={[s.small, { paddingHorizontal: 16, paddingTop: 8 }]}>
+          Photo reading (OCR) isn't downloaded yet. It downloads when you first tap "Snap notes".
+        </Text>
+      )}
       {justDownloaded && (
         <Pressable style={s.banner} onPress={() => setJustDownloaded(false)}>
           <Text style={s.bannerText}>✅ All set! Models are on your phone. You can switch on airplane mode now. (tap to dismiss)</Text>
@@ -593,6 +726,42 @@ function Main() {
       <PdfExtractor ref={pdf} />
     </SafeAreaView>
   );
+}
+
+function groupView(keys: ModelKey[], dl: Partial<Record<ModelKey, DlState>>) {
+  let total = 0;
+  let got = 0;
+  let allDone = true;
+  let active: DlState | undefined;
+  let err: string | undefined;
+  for (const k of keys) {
+    const sz = specOf(k).expectedSize;
+    const st = dl[k];
+    total += sz;
+    got += st?.status === 'done' ? sz : Math.min(st?.downloaded ?? 0, sz);
+    if (st?.status !== 'done') allDone = false;
+    if (st && ['downloading', 'waiting', 'verifying', 'checking'].includes(st.status)) active = st;
+    if (st?.status === 'paused' && st.error) err = st.error;
+  }
+  const mb = (n: number) => (n / 1e6).toFixed(0);
+  const pct = total ? Math.floor((got / total) * 100) : 0;
+  let line = '';
+  if (allDone) line = 'on your phone';
+  else if (active?.status === 'waiting') line = active.note ?? 'retrying…';
+  else if (active?.status === 'verifying') line = 'checking file…';
+  else if (active?.status === 'downloading') line = `${pct}%${active.source === 'registry' ? ' · QVAC registry' : ''}${active.note ? ' · ' + active.note : ''}`;
+  else if (got > 0) line = `paused at ${pct}%`;
+  return {
+    done: allDone,
+    pct: allDone ? 100 : pct,
+    sizeText: got > 0 && !allDone ? `${mb(got)} / ${mb(total)} MB` : `~${mb(total)} MB`,
+    line,
+    error: active?.status === 'waiting' ? active.error : err,
+  };
+}
+
+function hasProgress(dl: Partial<Record<ModelKey, DlState>>) {
+  return Object.values(dl).some((st) => st && (st.status === 'done' || st.downloaded > 0 || st.status === 'paused'));
 }
 
 function ActionBtn({ icon, label, onPress, disabled }: { icon: string; label: string; onPress: () => void; disabled?: boolean }) {
