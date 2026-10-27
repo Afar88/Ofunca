@@ -729,12 +729,7 @@ function Main() {
               <ActionBtn icon="📷" label="Snap notes" onPress={snapNotes} disabled={!!busy} />
               <ActionBtn icon="📋" label="Paste text" onPress={() => setEditor({ mode: 'paste', title: '', text: '', subject: subjects[0] ?? '' })} disabled={!!busy} />
             </View>
-            {docs.length === 0 && hideGuide ? (
-              <View style={s.card}>
-                <Text style={s.h2}>No notes yet</Text>
-                <Text style={s.small}>Tap 📄, 📷 or 📋 above to add your first notes.</Text>
-              </View>
-            ) : docs.length === 0 ? (
+            {!hideGuide && (
               <View style={s.card}>
                 <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                   <Text style={[s.h2, { flex: 1 }]}>How Ofunca works</Text>
@@ -758,6 +753,12 @@ function Main() {
                   </View>
                 ))}
                 <Text style={[s.small, { marginTop: 14 }]}>✈️ Everything runs and stays on this phone. No internet needed.</Text>
+              </View>
+            )}
+            {docs.length === 0 ? (
+              <View style={s.card}>
+                <Text style={s.h2}>No notes yet</Text>
+                <Text style={s.small}>Tap 📄, 📷 or 📋 above to add your first notes.</Text>
               </View>
             ) : (
               subjects.map((sub) => (
@@ -1055,7 +1056,7 @@ function Main() {
                 ))}
               </View>
               <Pressable style={s.menuItem} onPress={() => { setHideGuide(!hideGuide); setMenu(false); setTab('notes'); }}>
-                <Text style={s.menuText}>📖 {hideGuide ? 'Show' : 'Hide'} the how-to guide</Text>
+                <Text style={s.menuText}>📖 {hideGuide ? 'Show' : 'Hide'} “How Ofunca works” guide</Text>
               </Pressable>
               <Pressable style={s.menuItem} onPress={() => { setMenu(false); checkForUpdate(true); }}>
                 <Text style={s.menuText}>🔄 Check for updates</Text>
