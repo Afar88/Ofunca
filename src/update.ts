@@ -16,13 +16,13 @@ function newer(a: string, b: string) {
   return false;
 }
 
-export async function checkForUpdate() {
+export async function checkForUpdate(manual = false) {
   try {
     let last: { at?: number; skip?: string } = {};
     try {
       last = JSON.parse(await FS.readAsStringAsync(STAMP));
     } catch {}
-    if (last.at && Date.now() - last.at < 20 * 60 * 60 * 1000) return;
+    if (!manual && last.at && Date.now() - last.at < 20 * 60 * 60 * 1000) return;
     const ctl = new AbortController();
     const t = setTimeout(() => ctl.abort(), 8000);
     const r = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`, {
@@ -31,10 +31,16 @@ export async function checkForUpdate() {
     });
     clearTimeout(t);
     await FS.writeAsStringAsync(STAMP, JSON.stringify({ ...last, at: Date.now() }));
-    if (!r.ok) return;
+    if (!r.ok) {
+      if (manual) Alert.alert('Could not check', 'Connect to the internet and try again.');
+      return;
+    }
     const rel: any = await r.json();
     const tag = String(rel?.tag_name ?? '');
-    if (!tag || !newer(tag, CURRENT) || last.skip === tag) return;
+    if (!tag || !newer(tag, CURRENT) || (!manual && last.skip === tag)) {
+      if (manual) Alert.alert('You are up to date ✅', `Ofunca ${CURRENT} is the newest version.`);
+      return;
+    }
     const apk = (rel.assets ?? []).find((a: any) => String(a?.name ?? '').endsWith('.apk'));
     const url: string = apk?.browser_download_url ?? rel.html_url;
     Alert.alert(
@@ -47,6 +53,7 @@ export async function checkForUpdate() {
       ],
     );
   } catch {
+    if (manual) Alert.alert('Could not check', 'Connect to the internet and try again.');
     // offline or GitHub unreachable: try again next launch
   }
 }

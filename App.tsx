@@ -91,7 +91,7 @@ const LETTERS = ['A', 'B', 'C', 'D'];
 
 const SETTINGS_FILE = (FS.documentDirectory ?? '') + 'ofunca-settings.json';
 type ThemePref = 'system' | 'light' | 'dark';
-type Settings = { device?: Device; setupDone?: boolean; theme?: ThemePref };
+type Settings = { device?: Device; setupDone?: boolean; theme?: ThemePref; hideGuide?: boolean };
 async function readSettings(): Promise<Settings> {
   try {
     return JSON.parse(await FS.readAsStringAsync(SETTINGS_FILE));
@@ -117,8 +117,17 @@ function Main() {
   const sys = useColorScheme();
   const [themePref, setThemePref] = useState<ThemePref>('system');
   useEffect(() => {
-    readSettings().then((st) => st.theme && setThemePref(st.theme));
+    readSettings().then((st) => {
+      if (st.theme) setThemePref(st.theme);
+      if (st.hideGuide) setHideGuide(true);
+    });
   }, []);
+  const [hideGuide, setHideGuideState] = useState(false);
+  const setHideGuide = (v: boolean) => {
+    setHideGuideState(v);
+    saveSettings({ hideGuide: v });
+  };
+  const [menu, setMenu] = useState(false);
   const dark = themePref === 'dark' || (themePref === 'system' && sys === 'dark');
   const themeKey = dark ? 'dark' : 'light';
   if (applied !== themeKey) applyTheme(dark);
@@ -701,6 +710,9 @@ function Main() {
             </Text>
           </View>
         )}
+        <Pressable onPress={() => setMenu(true)} hitSlop={12} style={s.moreBtn} accessibilityLabel="More options">
+          <Text style={s.moreText}>⋯</Text>
+        </Pressable>
       </View>
 
       {justDownloaded && (
@@ -717,9 +729,19 @@ function Main() {
               <ActionBtn icon="📷" label="Snap notes" onPress={snapNotes} disabled={!!busy} />
               <ActionBtn icon="📋" label="Paste text" onPress={() => setEditor({ mode: 'paste', title: '', text: '', subject: subjects[0] ?? '' })} disabled={!!busy} />
             </View>
-            {docs.length === 0 ? (
+            {docs.length === 0 && hideGuide ? (
               <View style={s.card}>
-                <Text style={s.h2}>How Ofunca works</Text>
+                <Text style={s.h2}>No notes yet</Text>
+                <Text style={s.small}>Tap 📄, 📷 or 📋 above to add your first notes.</Text>
+              </View>
+            ) : docs.length === 0 ? (
+              <View style={s.card}>
+                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                  <Text style={[s.h2, { flex: 1 }]}>How Ofunca works</Text>
+                  <Pressable onPress={() => setHideGuide(true)} hitSlop={10}>
+                    <Text style={s.clearLink}>Hide ✕</Text>
+                  </Pressable>
+                </View>
                 {[
                   ['1', '📚 Add your notes', 'Import a PDF, snap a photo of your notebook or handout, or paste text. Put each one under a subject.'],
                   ['2', '💬 Ask anything', 'Type your question, even two or three at once. Answers come only from your notes, with “Where from?” showing the exact part.'],
@@ -764,41 +786,6 @@ function Main() {
                 </View>
               ))
             )}
-            <View style={[s.card, { marginTop: 18 }]}>
-              <Text style={s.h3}>Privacy & offline</Text>
-              <Text style={s.small}>
-                Notes, embeddings and answers never leave this phone. The models ({MODELS.map((m) => m.label).join(', ')} and QVAC OCR) run locally through
-                Tether's QVAC SDK. Internet is only used once, to download the models. If answers feel slow, try GPU.
-              </Text>
-              <View style={s.segment}>
-                <Text style={[s.small, { marginRight: 8 }]}>Compute:</Text>
-                {(['cpu', 'gpu'] as Device[]).map((d) => (
-                  <Pressable key={d} onPress={() => switchDevice(d)} style={[s.segBtn, device === d && s.segBtnOn]}>
-                    <Text style={[s.segText, device === d && s.segTextOn]}>{d.toUpperCase()}</Text>
-                  </Pressable>
-                ))}
-              </View>
-              <View style={s.segment}>
-                <Text style={[s.small, { marginRight: 8 }]}>Theme:</Text>
-                {(['system', 'light', 'dark'] as ThemePref[]).map((t) => (
-                  <Pressable key={t} onPress={() => chooseTheme(t)} style={[s.segBtn, themePref === t && s.segBtnOn]}>
-                    <Text style={[s.segText, themePref === t && s.segTextOn]}>{t === 'system' ? 'Auto' : t === 'light' ? '☀ Light' : '☾ Dark'}</Text>
-                  </Pressable>
-                ))}
-              </View>
-              {docs.length > 0 && (
-                <Pressable
-                  onPress={() =>
-                    Alert.alert('Delete all notes?', 'This removes every imported note from this phone.', [
-                      { text: 'Cancel', style: 'cancel' },
-                      { text: 'Delete all', style: 'destructive', onPress: async () => { await clearAll(); await refreshLibrary(); setQas([]); setQuiz([]); } },
-                    ])
-                  }
-                >
-                  <Text style={[s.small, { color: C.danger, marginTop: 10 }]}>Delete all notes</Text>
-                </Pressable>
-              )}
-            </View>
             <Credit />
           </ScrollView>
         )}
@@ -1044,6 +1031,70 @@ function Main() {
             </ScrollView>
           </KeyboardAvoidingView>
         </SafeAreaView>
+      </Modal>
+
+      <Modal visible={menu} transparent animationType="fade" onRequestClose={() => setMenu(false)}>
+        <Pressable style={s.scrim} onPress={() => setMenu(false)}>
+          <Pressable style={s.sheet} onPress={() => {}}>
+            <ScrollView style={{ maxHeight: 520 }}>
+              <Text style={s.h2}>More options</Text>
+              <View style={s.segment}>
+                <Text style={[s.small, { marginRight: 8 }]}>Theme:</Text>
+                {(['system', 'light', 'dark'] as ThemePref[]).map((t) => (
+                  <Pressable key={t} onPress={() => chooseTheme(t)} style={[s.segBtn, themePref === t && s.segBtnOn]}>
+                    <Text style={[s.segText, themePref === t && s.segTextOn]}>{t === 'system' ? 'Auto' : t === 'light' ? '☀ Light' : '☾ Dark'}</Text>
+                  </Pressable>
+                ))}
+              </View>
+              <View style={s.segment}>
+                <Text style={[s.small, { marginRight: 8 }]}>Compute:</Text>
+                {(['cpu', 'gpu'] as Device[]).map((d) => (
+                  <Pressable key={d} onPress={() => { setMenu(false); switchDevice(d); }} style={[s.segBtn, device === d && s.segBtnOn]}>
+                    <Text style={[s.segText, device === d && s.segTextOn]}>{d.toUpperCase()}</Text>
+                  </Pressable>
+                ))}
+              </View>
+              <Pressable style={s.menuItem} onPress={() => { setHideGuide(!hideGuide); setMenu(false); setTab('notes'); }}>
+                <Text style={s.menuText}>📖 {hideGuide ? 'Show' : 'Hide'} the how-to guide</Text>
+              </Pressable>
+              <Pressable style={s.menuItem} onPress={() => { setMenu(false); checkForUpdate(true); }}>
+                <Text style={s.menuText}>🔄 Check for updates</Text>
+              </Pressable>
+              {qas.length > 0 && (
+                <Pressable style={s.menuItem} onPress={() => { setMenu(false); confirmClear('chat'); }}>
+                  <Text style={s.menuText}>💬 Clear all Ask questions</Text>
+                </Pressable>
+              )}
+              {quiz.length > 0 && (
+                <Pressable style={s.menuItem} onPress={() => { setMenu(false); confirmClear('quiz'); }}>
+                  <Text style={s.menuText}>🧠 Clear quiz</Text>
+                </Pressable>
+              )}
+              {docs.length > 0 && (
+                <Pressable
+                  style={s.menuItem}
+                  onPress={() => {
+                    setMenu(false);
+                    Alert.alert('Delete all notes?', 'This removes every imported note from this phone.', [
+                      { text: 'Cancel', style: 'cancel' },
+                      { text: 'Delete all', style: 'destructive', onPress: async () => { await clearAll(); await refreshLibrary(); setQas([]); setQuiz([]); } },
+                    ]);
+                  }}
+                >
+                  <Text style={[s.menuText, { color: C.danger }]}>🗑 Delete all notes</Text>
+                </Pressable>
+              )}
+              <Text style={[s.h3, { marginTop: 16 }]}>Privacy & offline</Text>
+              <Text style={s.small}>
+                Notes, embeddings and answers never leave this phone. The models ({MODELS.map((m) => m.label).join(', ')} and QVAC OCR) run locally through
+                Tether's QVAC SDK. Internet is only used once, to download the models. If answers feel slow, try GPU.
+              </Text>
+            </ScrollView>
+            <Pressable style={s.btn} onPress={() => setMenu(false)}>
+              <Text style={s.btnText}>Close</Text>
+            </Pressable>
+          </Pressable>
+        </Pressable>
       </Modal>
 
       <Modal visible={!!picker} transparent animationType="fade" onRequestClose={() => closePicker(null)}>
@@ -1327,6 +1378,10 @@ const makeStyles = () => StyleSheet.create({
   optText: { color: C.text, fontSize: 15, fontWeight: '600' },
   stepNum: { width: 32, height: 32, borderRadius: 16, backgroundColor: C.pink, alignItems: 'center', justifyContent: 'center', borderBottomWidth: 3, borderBottomColor: C.pinkDeep },
   stepNumText: { color: '#fff', fontWeight: '900', fontSize: 16 },
+  moreBtn: { marginLeft: 8, width: 36, height: 36, borderRadius: 18, backgroundColor: 'rgba(255,255,255,0.22)', alignItems: 'center', justifyContent: 'center' },
+  moreText: { color: '#fff', fontSize: 22, fontWeight: '900', marginTop: -4 },
+  menuItem: { paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: C.border },
+  menuText: { color: C.text, fontSize: 16, fontWeight: '700' },
   btnGhost: { borderWidth: 2, borderColor: C.primary, borderBottomWidth: 4, borderRadius: 22, paddingVertical: 11, alignItems: 'center', marginTop: 12, backgroundColor: C.card },
   btnGhostText: { color: C.primary, fontWeight: '900', fontSize: 15 },
   header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 14, backgroundColor: C.header, borderBottomLeftRadius: 22, borderBottomRightRadius: 22 },
