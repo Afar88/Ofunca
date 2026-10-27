@@ -6,7 +6,8 @@ import { Animated, Easing, Image, Pressable, StyleSheet, Text, View } from 'reac
 const SPARKS = ['✨', '⭐', '💖', '✨', '🍬', '⭐', '✨', '💜'];
 
 export function Intro({ onDone }: { onDone: () => void }) {
-  const scale = useRef(new Animated.Value(0)).current;
+  // Starts at full size so it carries straight on from the launch screen's O (no blank gap).
+  const scale = useRef(new Animated.Value(1)).current;
   const spin = useRef(new Animated.Value(0)).current;
   const burst = useRef(new Animated.Value(0)).current;
   const title = useRef(new Animated.Value(0)).current;
@@ -23,7 +24,8 @@ export function Intro({ onDone }: { onDone: () => void }) {
     const wiggle = (to: number, d = 90) =>
       Animated.timing(spin, { toValue: to, duration: d, easing: Easing.inOut(Easing.quad), useNativeDriver: true });
     Animated.sequence([
-      Animated.spring(scale, { toValue: 1, friction: 4, tension: 120, useNativeDriver: true }),
+      Animated.timing(scale, { toValue: 0.82, duration: 140, easing: Easing.out(Easing.quad), useNativeDriver: true }), // squash…
+      Animated.spring(scale, { toValue: 1, friction: 3, tension: 160, useNativeDriver: true }), // …and pop!
       Animated.parallel([
         Animated.timing(burst, { toValue: 1, duration: 700, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
         Animated.sequence([wiggle(-1), wiggle(1), wiggle(-1), wiggle(1), wiggle(0, 120)]),
@@ -66,7 +68,7 @@ export function Intro({ onDone }: { onDone: () => void }) {
             );
           })}
           <Animated.View style={{ transform: [{ translateY: hop }, { scale }, { rotate }] }}>
-            <Image source={require('../assets/splash-icon.png')} style={st.mark} resizeMode="contain" />
+            <Image source={require('../assets/splash-icon.png')} style={st.mark} resizeMode="contain" fadeDuration={0} />
           </Animated.View>
         </View>
         <Animated.View
