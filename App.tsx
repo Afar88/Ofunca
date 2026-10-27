@@ -277,6 +277,13 @@ function Main() {
   const setKey = useCallback((k: ModelKey, st: DlState) => setDl((d) => ({ ...d, [k]: st })), []);
   const [device, setDevice] = useState<Device>('cpu');
   const [online, setOnline] = useState<boolean | null>(null);
+  const [chipOpen, setChipOpen] = useState(true);
+  const chipTimer = useRef<any>(null);
+  const flashChip = useCallback((ms: number) => {
+    setChipOpen(true);
+    clearTimeout(chipTimer.current);
+    chipTimer.current = setTimeout(() => setChipOpen(false), ms);
+  }, []);
   const [tab, setTab] = useState<Tab>('notes');
   const [docs, setDocs] = useState<NoteDoc[]>([]);
   const [chunks, setChunks] = useState<StoredChunk[]>([]);
@@ -301,6 +308,11 @@ function Main() {
   // The app opens straight away; the AI models load in the background (search model first,
   // then the tutor) and anything that needs them waits for them instead of blocking the screen.
   const [ai, setAi] = useState<AiState>('off');
+  useEffect(() => {
+    if (ai === 'ready') flashChip(4000);
+    return () => clearTimeout(chipTimer.current);
+  }, [ai, online, flashChip]);
+
   const modelsReady = useRef<Promise<boolean> | null>(null);
   const bootModels = useCallback((dev: Device) => {
     const p = (async () => {
@@ -983,11 +995,15 @@ function Main() {
             <Text style={s.chipText}>AI warming up</Text>
           </View>
         ) : (
-          <View style={[s.chip, online === false ? s.chipOffline : s.chipOnline]}>
-            <Text style={s.chipText}>
-              {online === false ? '✈ Offline · on-device AI' : '● On-device AI'}
-            </Text>
-          </View>
+          <Pressable onPress={() => flashChip(3000)} hitSlop={12} accessibilityLabel="On-device AI status">
+            {chipOpen ? (
+              <View style={[s.chip, online === false ? s.chipOffline : s.chipOnline]}>
+                <Text style={s.chipText}>{online === false ? '✈ Offline · on-device AI' : '● On-device AI'}</Text>
+              </View>
+            ) : (
+              <View style={s.aiDot} />
+            )}
+          </Pressable>
         )}
       </View>
 
@@ -1778,6 +1794,7 @@ const makeStyles = () => StyleSheet.create({
   chipOnline: { backgroundColor: 'rgba(255,255,255,0.18)' },
   chipOffline: { backgroundColor: '#2ECC71' },
   chipText: { fontSize: 12, fontWeight: '800', color: '#FFFFFF' },
+  aiDot: { width: 12, height: 12, borderRadius: 6, backgroundColor: '#2ECC71', borderWidth: 2, borderColor: 'rgba(255,255,255,0.85)', margin: 6 },
   banner: { backgroundColor: C.ok, padding: 12 },
   bannerText: { color: C.okText, fontWeight: '600', fontSize: 13 },
   pad: { padding: 16, paddingBottom: 30 },
