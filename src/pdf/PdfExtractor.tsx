@@ -1,6 +1,6 @@
 // Hidden WebView running a fully inlined pdf.js to pull text out of PDFs on-device.
 // The page has a strict CSP (no network) and loads nothing from the internet.
-import React, { forwardRef, useImperativeHandle, useRef } from 'react';
+import React, { forwardRef, useImperativeHandle, useRef, useState } from 'react';
 import { View } from 'react-native';
 import { WebView } from 'react-native-webview';
 import { PDF_HTML } from './pdfHtml.generated';
@@ -16,6 +16,7 @@ export const PdfExtractor = forwardRef<PdfExtractorHandle>(function PdfExtractor
   const pending = useRef<Record<string, Pending>>({});
   const ready = useRef(false);
   const waiters = useRef<(() => void)[]>([]);
+  const [gen, setGen] = useState(0); // bumped to start a fresh reader after its renderer died
 
   useImperativeHandle(ref, () => ({
     extract: async (base64, onProgress) => {
@@ -25,6 +26,7 @@ export const PdfExtractor = forwardRef<PdfExtractorHandle>(function PdfExtractor
           setTimeout(() => rej(new Error('PDF reader did not start')), 20000);
         });
       }
+      if (!web.current) throw new Error('PDF reader is not ready. Please try again.');
       const id = Math.random().toString(36).slice(2);
       return new Promise<string[]>((resolve, reject) => {
         pending.current[id] = { resolve, reject, onProgress };
@@ -36,6 +38,7 @@ export const PdfExtractor = forwardRef<PdfExtractorHandle>(function PdfExtractor
   return (
     <View style={{ width: 1, height: 1, opacity: 0, position: 'absolute' }} pointerEvents="none">
       <WebView
+        key={gen}
         ref={web}
         originWhitelist={['about:blank', 'data:*']}
         source={{ html: PDF_HTML, baseUrl: 'about:blank' }}
@@ -44,6 +47,19 @@ export const PdfExtractor = forwardRef<PdfExtractorHandle>(function PdfExtractor
         allowFileAccess={false}
         cacheEnabled={false}
         onShouldStartLoadWithRequest={(req) => req.url === 'about:blank' || req.url.startsWith('data:')}
+        // Android kills the whole app if a WebView's renderer dies (e.g. a huge PDF) and nobody handles it.
+        // Handle it: fail the current PDF with a clear message and start a fresh reader.
+        onRenderProcessGone={() => {
+          ready.current = false;
+          const all = pending.current;
+          pending.current = {};
+          Object.values(all).forEach((p) => p.reject(new Error('This PDF was too big for the phone to read. Try a smaller PDF, or snap photos of the pages.')));
+          setGen((g) => g + 1);
+        }}
+        onContentProcessDidTerminate={() => {
+          ready.current = false;
+          setGen((g) => g + 1);
+        }}
         onMessage={(ev) => {
           let msg: any;
           try {

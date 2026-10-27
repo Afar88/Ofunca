@@ -63,7 +63,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { Camera } from 'expo-camera';
 import SnapCamera, { type SnapResult } from './src/SnapCamera';
 import { Intro } from './src/Intro';
-import { noteError, lastErrorLine } from './src/lastError';
+import { noteError, lastErrorLine, onStrayError } from './src/lastError';
 import { Confetti } from './src/Confetti';
 import {
   NOT_FOUND,
@@ -239,11 +239,51 @@ function MenuRow(p: { C: any; icon: string; label: string; hint?: string; onPres
   );
 }
 
+/** Last line of defence: if a screen throws while drawing, show a calm "Try again" instead of closing. */
+class Guard extends React.Component<{ children: React.ReactNode }, { failed: boolean; round: number }> {
+  state = { failed: false, round: 0 };
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+  componentDidCatch(e: any) {
+    noteError(e, 'screen');
+  }
+  render() {
+    if (!this.state.failed) return <React.Fragment key={this.state.round}>{this.props.children}</React.Fragment>;
+    return (
+      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: 28, backgroundColor: '#2B0B5E' }}>
+        <Text style={{ color: '#fff', fontSize: 20, fontWeight: '900', textAlign: 'center' }}>Something went wrong</Text>
+        <Text style={{ color: '#E3CCFF', fontSize: 14, textAlign: 'center', marginTop: 8, lineHeight: 20 }}>
+          Your notes are safe. Tap below to reload the screen. If it keeps happening, use Report a problem in the menu.
+        </Text>
+        <RNPressable
+          onPress={() => this.setState((st) => ({ failed: false, round: st.round + 1 }))}
+          style={{ marginTop: 18, backgroundColor: '#FF3D8B', borderRadius: 22, paddingVertical: 13, paddingHorizontal: 34 }}
+        >
+          <Text style={{ color: '#fff', fontWeight: '900', fontSize: 16 }}>Try again</Text>
+        </RNPressable>
+      </View>
+    );
+  }
+}
+
 export default function App() {
   const [intro, setIntro] = useState(true);
+  // Release builds: a stray error outside drawing (timer, native callback) shows a short note instead of closing the app.
+  useEffect(() => {
+    let lastAt = 0;
+    onStrayError(() => {
+      if (Date.now() - lastAt < 4000) return;
+      lastAt = Date.now();
+      Alert.alert('Something went wrong', 'Ofunca hit a small problem but kept running. If something looks stuck, try that step again.');
+    });
+    return () => onStrayError(null);
+  }, []);
   return (
     <SafeAreaProvider>
-      <Main />
+      <Guard>
+        <Main />
+      </Guard>
       {intro && <Intro onDone={() => setIntro(false)} />}
     </SafeAreaProvider>
   );
@@ -269,7 +309,12 @@ function Main() {
   const [lastAction, setLastAction] = useState<'import' | 'snap' | 'paste' | null>(null);
   function act(which: 'import' | 'snap' | 'paste', fn: () => Promise<void> | void) {
     if (!busy) setLastAction(which);
-    fn();
+    Promise.resolve()
+      .then(fn)
+      .catch((e) => {
+        noteError(e, which);
+        Alert.alert('Something went wrong', String(e?.message ?? e));
+      });
   }
   const [menuSec, setMenuSec] = useState<null | 'study' | 'look' | 'data' | 'about'>(null);
   function toggleSec(k: 'study' | 'look' | 'data' | 'about') {
@@ -346,7 +391,11 @@ function Main() {
   }, [ai, online, flashChip]);
 
   const modelsReady = useRef<Promise<boolean> | null>(null);
+  const booting = useRef(false);
   const bootModels = useCallback((dev: Device) => {
+    // A double tap on "Try again" (or a device switch mid-load) must not load the models twice.
+    if (booting.current && modelsReady.current) return modelsReady.current;
+    booting.current = true;
     const p = (async () => {
       try {
         setPhase('ready');
@@ -364,6 +413,8 @@ function Main() {
         setPhase('error');
         setPhaseMsg(e?.message ?? String(e));
         return false;
+      } finally {
+        booting.current = false;
       }
     })();
     modelsReady.current = p;
@@ -389,7 +440,7 @@ function Main() {
     (async () => {
       // Must run before the first QVAC call: the SDK reads this file when its worker starts.
       await writeQvacRuntimeConfig();
-      await refreshLibrary();
+      await refreshLibrary().catch((e) => noteError(e, 'library'));
       const st = await readSettings();
       const dev: Device = st.device === 'gpu' ? 'gpu' : 'cpu';
       setDevice(dev);
@@ -411,10 +462,18 @@ function Main() {
         await refreshSaved().catch(() => {});
         setPhase('needDownload');
       }
-    })();
+    })().catch((e) => {
+      // Never leave the app stuck on the start screen.
+      noteError(e, 'startup');
+      setPhaseMsg(e?.message ?? String(e));
+      setPhase('error');
+    });
   }, [bootModels, refreshLibrary, refreshSaved]);
 
+  const downloading = useRef(false);
   async function startDownload() {
+    if (downloading.current) return;
+    downloading.current = true;
     setPhase('downloading');
     activateKeepAwakeAsync('model-download').catch(() => {});
     try {
@@ -433,14 +492,27 @@ function Main() {
         `${friendlyError(e)}\n\nYour progress is saved. Tap "Resume download" when the connection is better (Wi‑Fi helps). You can also download the files in Chrome and use "Import model file".`,
       );
     } finally {
+      downloading.current = false;
       deactivateKeepAwake('model-download').catch(() => {});
     }
   }
 
+  const pickingModel = useRef(false);
   async function importModel() {
-    const res = await DocumentPicker.getDocumentAsync({ type: '*/*', copyToCacheDirectory: false, multiple: false });
-    if (res.canceled || !res.assets?.length) return;
-    const f = res.assets[0];
+    if (pickingModel.current) return;
+    pickingModel.current = true;
+    try {
+      const res = await DocumentPicker.getDocumentAsync({ type: '*/*', copyToCacheDirectory: false, multiple: false });
+      if (res.canceled || !res.assets?.length) return;
+      await importPicked(res.assets[0]);
+    } catch (e: any) {
+      noteError(e);
+      Alert.alert('Import failed', e?.message ?? String(e));
+    } finally {
+      pickingModel.current = false;
+    }
+  }
+  async function importPicked(f: DocumentPicker.DocumentPickerAsset) {
     setImporting('Preparing…');
     try {
       const m = await importPickedModel({ uri: f.uri, size: f.size, name: f.name }, setImporting);
@@ -464,6 +536,10 @@ function Main() {
 
   async function switchDevice(dev: Device) {
     if (dev === device || busy) return;
+    if (booting.current) {
+      Alert.alert('One moment', 'The AI is still starting. Try switching again when it is ready.');
+      return;
+    }
     setDevice(dev);
     await saveSettings({ device: dev });
     await unloadAll();
@@ -542,8 +618,13 @@ function Main() {
   async function moveDoc(d: NoteDoc) {
     const sub = await pickSubject(`Move "${d.name}" to…`, subjectOf(d));
     if (!sub) return;
-    await setDocSubject(d.id, sub);
-    await refreshLibrary();
+    try {
+      await setDocSubject(d.id, sub);
+      await refreshLibrary();
+    } catch (e: any) {
+      noteError(e);
+      Alert.alert('Could not move it', e?.message ?? String(e));
+    }
   }
 
   async function importFile() {
@@ -562,7 +643,8 @@ function Main() {
       if (isPdf) {
         const b64 = await FS.readAsStringAsync(f.uri, { encoding: FS.EncodingType.Base64 });
         const say = throttled((t) => setBusy(t));
-        const pages = await pdf.current!.extract(b64, (p, t) => say(`Reading PDF… page ${p}/${t}`, p === t));
+        if (!pdf.current) throw new Error('The PDF reader is not ready yet. Please try again in a moment.');
+        const pages = await pdf.current.extract(b64, (p, t) => say(`Reading PDF… page ${p}/${t}`, p === t));
         raw = chunkPages(pages);
         if (!raw.length) throw new Error('This PDF has no selectable text (it may be scanned). Try "Snap notes" on a photo of the page instead.');
       } else {
@@ -606,7 +688,19 @@ function Main() {
     else setEditor(e);
   }
 
+  const snapping = useRef(false);
   async function snapNotes() {
+    if (snapping.current) return; // a second tap while the camera is opening
+    snapping.current = true;
+    let uri: string | undefined;
+    try {
+      uri = await pickPhoto();
+    } finally {
+      snapping.current = false; // released before reading, so another snap can line up behind this one
+    }
+    if (uri) await readPhoto(uri);
+  }
+  async function pickPhoto(): Promise<string | undefined> {
     // Uses the system file/gallery picker (no camera or storage permission needed).
     if (!(await ocrCached())) {
       // The photo reader ships inside the app: copy it into place once (no internet needed).
@@ -638,7 +732,7 @@ function Main() {
       Alert.alert('Could not open the camera', String(e?.message ?? e));
       return;
     }
-    await readPhoto(uri);
+    return uri;
   }
 
   async function readPhoto(photo: string) {
@@ -660,14 +754,17 @@ function Main() {
     });
   }
 
+  const savingEditor = useRef(false);
   async function saveEditor() {
-    if (!editor) return;
+    if (!editor || savingEditor.current) return;
     const { title, text, mode, subject } = editor;
     if (text.trim().length < 30) {
       Alert.alert('Too short', 'Add a bit more text (at least a couple of sentences).');
       return;
     }
+    savingEditor.current = true; // a double tap must not save the same notes twice
     setEditor(null);
+    setTimeout(() => (savingEditor.current = false), 600);
     await guarded('Indexing…', async () => {
       await indexDoc(title.trim() || 'Pasted notes', mode === 'ocr' ? 'text' : 'pasted', chunkText(text), subject);
     });
@@ -718,7 +815,17 @@ function Main() {
     setQas((p) => p.map((x) => (x.id === id ? { ...x, done: true } : x)));
   }
 
+  const asking = useRef(false);
   async function ask() {
+    if (asking.current) return; // Ask tapped twice (or Enter + tap) before the screen updated
+    asking.current = true;
+    try {
+      await askOnce();
+    } finally {
+      asking.current = false;
+    }
+  }
+  async function askOnce() {
     const q = question.trim();
     if (!q) return;
     if (replyTo) {
@@ -798,16 +905,19 @@ function Main() {
   // Questions answered wrong are kept (across restarts) for a "Review my mistakes" round.
   const [mistakes, setMistakes] = useState<QuizCard[]>([]);
   const [reviewing, setReviewing] = useState(false);
+  const pickedIds = useRef(new Set<string>());
   function pick(q: QuizCard, oi: number) {
-    setQuiz((prev) => prev.map((x) => (x.id === q.id ? { ...x, picked: oi, revealed: true } : x)));
+    if (q.picked !== undefined || pickedIds.current.has(q.id)) return; // two fast taps count once
+    pickedIds.current.add(q.id);
+    setQuiz((prev) => prev.map((x) => (x.id === q.id && x.picked === undefined ? { ...x, picked: oi, revealed: true } : x)));
     try {
       Vibration.vibrate(oi === q.correct ? 12 : [0, 35, 70, 35]); // tiny tick for right, double buzz for wrong
     } catch {} // a buzz is a nice-to-have; it must never take the quiz down
-    const key = q.question.toLowerCase();
+    const key = String(q.question ?? '').toLowerCase();
     if (oi !== q.correct) {
-      setMistakes((prev) => (prev.some((m) => m.question.toLowerCase() === key) ? prev : [...prev, { ...q, picked: undefined, revealed: false }].slice(-60)));
+      setMistakes((prev) => (prev.some((m) => String(m.question ?? '').toLowerCase() === key) ? prev : [...prev, { ...q, picked: undefined, revealed: false }].slice(-60)));
     } else if (reviewing) {
-      setMistakes((prev) => prev.filter((m) => m.question.toLowerCase() !== key)); // got it right now: mastered
+      setMistakes((prev) => prev.filter((m) => String(m.question ?? '').toLowerCase() !== key)); // got it right now: mastered
     }
   }
   function startReview() {
@@ -818,7 +928,14 @@ function Main() {
       }
       return a;
     };
-    const round = shuffle(mistakes.slice()).slice(0, 20).map((m) => {
+    // Only questions that still have their A–D options and a valid answer can be replayed.
+    const usable = mistakes.filter((m) => Array.isArray(m.options) && m.options.length >= 2 && typeof m.correct === 'number' && m.correct >= 0 && m.correct < m.options.length);
+    if (!usable.length) {
+      Alert.alert('Nothing to review', 'These older mistakes can’t be replayed. Take a new quiz and any you miss will show up here.');
+      setMistakes([]);
+      return;
+    }
+    const round = shuffle(usable.slice()).slice(0, 20).map((m) => {
       const opts = m.options ?? [];
       const order = shuffle(opts.map((_, i) => i));
       return { ...m, id: makeId('r'), options: order.map((i) => opts[i]), correct: order.indexOf(m.correct ?? 0), picked: undefined, revealed: false };
@@ -842,13 +959,18 @@ function Main() {
   const historyLoaded = useRef(false);
   useEffect(() => {
     loadHistory<{ qas?: QA[]; quiz?: QuizCard[]; mistakes?: QuizCard[]; reviewing?: boolean }>().then((h) => {
-      if (h?.mistakes) setMistakes(h.mistakes);
-      if (h?.reviewing) setReviewing(true);
-      if (h?.qas) setQas(h.qas.map((x) => ({ ...x, done: true, answer: x.answer || NOT_FOUND })));
-      if (h?.quiz) {
-        setQuiz(h.quiz);
-        celebrated.current = h.quiz.filter((q) => q.options).map((q) => q.id).join(',');
+      // Saved history may come from an older version: clean it so a missing field never crashes the app.
+      const mistakes = cleanCards(h?.mistakes);
+      const quiz = cleanCards(h?.quiz);
+      const qas = cleanQas(h?.qas);
+      if (mistakes.length) setMistakes(mistakes);
+      if (h?.reviewing === true) setReviewing(true);
+      if (qas.length) setQas(qas);
+      if (quiz.length) {
+        setQuiz(quiz);
+        celebrated.current = quiz.filter((q) => q.options).map((q) => q.id).join(',');
       }
+    }).catch((e) => noteError(e, 'history')).finally(() => {
       historyLoaded.current = true;
     });
   }, []);
@@ -880,7 +1002,17 @@ function Main() {
     ]);
   }
 
+  const makingQuiz = useRef(false);
   async function makeQuiz() {
+    if (makingQuiz.current) return; // a double tap must not write two quizzes into one
+    makingQuiz.current = true;
+    try {
+      await makeQuizOnce();
+    } finally {
+      makingQuiz.current = false;
+    }
+  }
+  async function makeQuizOnce() {
     const pool = chunksIn(scopeValid);
     if (!pool.length) {
       Alert.alert('No notes yet', 'Add some notes first (or try the sample notes).');
@@ -889,7 +1021,8 @@ function Main() {
     setQuiz([]);
     setReviewing(false);
     await guarded('Writing quiz…', async () => {
-      const excerpts = quizExcerpts(pool, quizSize, scopeValid === AUTO ? (c) => subjectByDoc[c.docId] ?? '' : undefined);
+      const excerpts = quizExcerpts(pool, quizSize, scopeValid === AUTO ? (c) => subjectByDoc[c.docId] ?? '' : undefined).filter((c) => c && typeof c.text === 'string' && c.text.trim());
+      if (!excerpts.length) throw new Error('Your notes don’t have enough text for a quiz yet. Add a bit more and try again.');
       const asked: string[] = [];
       let made = 0;
       for (let i = 0; i < excerpts.length + 4 && made < quizSize; i++) {
@@ -915,6 +1048,7 @@ function Main() {
           { id: makeId('z'), ...q, source: ex, docName: docNames[ex.docId] ?? 'Notes', revealed: false },
         ]);
       }
+      if (!made) throw new Error('The tutor couldn’t write questions from these notes this time. Please tap Quiz me again.');
     }, 'llm');
   }
 
@@ -980,7 +1114,7 @@ function Main() {
                         SHA-256 before using it.
                       </Text>
                       {MODEL_SPECS.filter((m) => m.mirrorUrl).map((m) => (
-                        <Pressable key={m.key} style={s.suggest} onPress={() => Linking.openURL(m.mirrorUrl!)}>
+                        <Pressable key={m.key} style={s.suggest} onPress={() => Linking.openURL(m.mirrorUrl!).catch(() => Alert.alert('Could not open', 'No browser on this phone could open that link.'))}>
                           <Text style={s.suggestText}>
                             ⬇ {m.fileName} ({Math.round(m.expectedSize / 1e6)} MB)
                           </Text>
@@ -1258,7 +1392,7 @@ function Main() {
                           style={[s.opt, done && isRight && s.optRight, done && isPicked && !isRight && s.optWrong]}
                         >
                           <Text style={s.optText}>
-                            {LETTERS[oi]}. {opt}
+                            {LETTERS[oi] ?? oi + 1}. {opt}
                             {done && isRight ? '  ✅' : ''}
                             {done && isPicked && !isRight ? '  ❌' : ''}
                           </Text>
@@ -1387,7 +1521,7 @@ function Main() {
                         onPress={() =>
                           Alert.alert('Remove notes?', d.name, [
                             { text: 'Cancel', style: 'cancel' },
-                            { text: 'Remove', style: 'destructive', onPress: async () => { await removeDoc(d.id); await refreshLibrary(); } },
+                            { text: 'Remove', style: 'destructive', onPress: () => { removeDoc(d.id).then(refreshLibrary).catch((e) => { noteError(e); Alert.alert('Could not remove it', String(e?.message ?? e)); }); } },
                           ])
                         }
                       >
@@ -1467,7 +1601,7 @@ function Main() {
                     setMenu(false);
                     Alert.alert('Delete all notes?', 'This removes every imported note from this phone.', [
                       { text: 'Cancel', style: 'cancel' },
-                      { text: 'Delete all', style: 'destructive', onPress: async () => { await clearAll(); await refreshLibrary(); setQas([]); setQuiz([]); } },
+                      { text: 'Delete all', style: 'destructive', onPress: () => { clearAll().then(refreshLibrary).then(() => { setQas([]); setQuiz([]); }).catch((e) => { noteError(e); Alert.alert('Could not delete', String(e?.message ?? e)); }); } },
                     ]);
                   }}
                 />
@@ -1566,6 +1700,53 @@ function Main() {
       <PdfExtractor ref={pdf} />
     </SafeAreaView>
   );
+}
+
+// ---------- Cleaning saved history (older versions saved fewer fields) ----------
+const EMPTY_CHUNK: StoredChunk = { id: '', docId: '', text: '', vec: [] };
+function cleanChunk(c: any): StoredChunk {
+  if (!c || typeof c !== 'object') return EMPTY_CHUNK;
+  return { ...c, id: String(c.id ?? ''), docId: String(c.docId ?? ''), text: typeof c.text === 'string' ? c.text : '', vec: Array.isArray(c.vec) ? c.vec : [], page: typeof c.page === 'number' ? c.page : undefined };
+}
+function cleanCards(list: any): QuizCard[] {
+  if (!Array.isArray(list)) return [];
+  const out: QuizCard[] = [];
+  for (const z of list) {
+    if (!z || typeof z !== 'object' || typeof z.question !== 'string' || !z.question.trim()) continue;
+    let options: string[] | undefined = Array.isArray(z.options) ? z.options.filter((o: any) => typeof o === 'string') : undefined;
+    if (options && options.length < 2) options = undefined;
+    const inRange = (n: any) => options && Number.isInteger(n) && n >= 0 && n < options.length;
+    const answer = typeof z.answer === 'string' ? z.answer : '';
+    let correct: number | undefined = undefined;
+    if (options) correct = inRange(z.correct) ? z.correct : Math.max(0, options.indexOf(answer));
+    out.push({
+      id: typeof z.id === 'string' && z.id ? z.id : makeId('z'),
+      question: z.question,
+      answer,
+      source: cleanChunk(z.source),
+      docName: typeof z.docName === 'string' ? z.docName : 'Notes',
+      revealed: !!z.revealed,
+      options,
+      correct,
+      picked: inRange(z.picked) ? z.picked : undefined,
+    });
+  }
+  return out;
+}
+function cleanQas(list: any): QA[] {
+  if (!Array.isArray(list)) return [];
+  return list
+    .filter((x) => x && typeof x === 'object' && typeof x.question === 'string')
+    .map((x) => ({
+      ...x,
+      id: typeof x.id === 'string' && x.id ? x.id : makeId('q'),
+      answer: typeof x.answer === 'string' && x.answer ? x.answer : NOT_FOUND,
+      hits: (Array.isArray(x.hits) ? x.hits : [])
+        .filter((h: any) => h && h.chunk)
+        .map((h: any) => ({ chunk: cleanChunk(h.chunk), score: Number(h.score) || 0, docName: typeof h.docName === 'string' ? h.docName : 'Notes' })),
+      done: true,
+      replyTo: x.replyTo && typeof x.replyTo.question === 'string' ? x.replyTo : undefined,
+    }));
 }
 
 function BrandMark() {

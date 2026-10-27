@@ -69,7 +69,7 @@ The models load comfortably side by side on a phone with 8 GB of RAM (tested tar
 
 - **Internet is used for exactly one thing:** the first-run model download (`downloadAsset`). After that, `loadModel` loads from the local QVAC cache: the SDK checks the cached files on disk before touching the network.
 - Notes, passages, embeddings, questions and answers are stored only in the app's private storage (`ofunca/library.json`). Nothing is uploaded, and there is no analytics or telemetry.
-- The PDF reader is a hidden WebView with pdf.js **inlined** and a strict Content-Security-Policy (`default-src 'none'`), so it cannot fetch anything.
+- The PDF reader is a hidden WebView with pdf.js **inlined** and a strict Content-Security-Policy (`default-src 'none'`), so it cannot fetch anything. If its renderer dies on a huge PDF, the app restarts the reader instead of closing (v1.0.12).
 - `android:usesCleartextTraffic="false"`, `android:allowBackup="false"`.
 
 ## Permissions and security (clean sideload)
@@ -84,6 +84,21 @@ The release APK requests only:
 Files and gallery photos are opened with the Android system picker (Storage Access Framework), so the app needs **no storage or media permissions**. Storage, media, microphone, overlay, SMS, contacts, location and install-packages permissions are all explicitly removed in `app.json` (`blockedPermissions`). The release build is not debuggable. It is signed with APK Signature Scheme v2 + v3, with no packers and no downloaded executable code (only model weights are downloaded). R8 shrinking is enabled by QVAC's official Expo plugin; this is the standard Android Gradle tool, not an obfuscating packer.
 
 > Sideloaded apps still show Android's normal *"install unknown apps"* prompt, and Xiaomi/Play Protect may run a routine scan of an app they have not seen before. That is expected for any APK installed outside the Play Store.
+
+## Stability fixes (v1.0.12)
+
+A full pass over every tap, saved file and native call, so a real phone never closes on its own:
+
+- **Quiz answer closed the app:** the vibration permission was blocked; it is now allowed and the buzz can never take the quiz down.
+- **Friendly error instead of a crash:** a top-level error screen with *Try again* (your notes are kept) catches drawing errors, and in release builds any stray JavaScript error shows a short message instead of closing Ofunca. Development builds still show the normal red error screen.
+- **Big PDFs:** if the hidden PDF reader runs out of memory, Android used to close the whole app; now that PDF fails with a clear message and a fresh reader starts.
+- **Old saved history:** quizzes, mistakes and answers saved by earlier versions are cleaned on load (missing options, answer, source or passages), so they can't crash the Quiz or Ask tabs. A damaged notes library file is also cleaned instead of breaking start-up.
+- **Double taps:** Ask, Quiz me, Save, Snap, Download and Import model ignore a second tap while the first is starting, so nothing is asked, saved or generated twice. A quiz answer counts once.
+- **Review my mistakes:** old mistakes without A–D options are skipped instead of showing an empty question.
+- **Quiz edge cases:** notes with no usable text, or a model that writes no valid question, now give a clear message instead of an empty quiz.
+- **Start-up:** a failure while opening the library or checking models shows the *Couldn't start* screen with *Try again* instead of hanging on the loading screen; *Try again* and CPU/GPU switching can't load the models twice.
+- **Camera and crop:** a failed shot or gallery pick no longer leaves an error behind, and the crop box is kept inside the photo so it can't ask for a negative or zero size.
+- **Links and deletes:** the model download links, *Remove notes*, *Delete all notes* and *Move to subject* show a message if they fail instead of failing silently.
 
 ## Install (Android phone, arm64, Android 10+)
 

@@ -51,7 +51,15 @@ export async function loadDB(): Promise<DB> {
   const info = await FS.getInfoAsync(FILE);
   if (info.exists) {
     try {
-      cache = JSON.parse(await FS.readAsStringAsync(FILE)) as DB;
+      const db: any = JSON.parse(await FS.readAsStringAsync(FILE));
+      // A half-written or older library file must never crash the app: keep only well-formed entries.
+      cache = {
+        version: 1,
+        docs: Array.isArray(db?.docs) ? db.docs.filter((d: any) => d && typeof d.id === 'string') : [],
+        chunks: Array.isArray(db?.chunks)
+          ? db.chunks.filter((c: any) => c && typeof c.docId === 'string' && typeof c.text === 'string' && Array.isArray(c.vec))
+          : [],
+      };
       return cache;
     } catch {
       // fall through to a fresh library if the file is corrupt

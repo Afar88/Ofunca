@@ -30,8 +30,9 @@ export default function SnapCamera({ visible, accent, onDone }: { visible: boole
 
   /** Where the photo sits on screen (it's letterboxed to fit). */
   const fit = useMemo(() => {
-    if (!shot || !area.w) return null;
+    if (!shot || !(area.w > 0) || !(area.h > 0) || !(shot.w > 0) || !(shot.h > 0)) return null;
     const k = Math.min(area.w / shot.w, area.h / shot.h);
+    if (!isFinite(k) || k <= 0) return null;
     const w = shot.w * k, h = shot.h * k;
     return { k, w, h, x: (area.w - w) / 2, y: (area.h - h) / 2 };
   }, [shot, area]);
@@ -44,7 +45,7 @@ export default function SnapCamera({ visible, accent, onDone }: { visible: boole
     putBox(null);
     setReady(false);
     if (!u) return setShotRaw(null);
-    Image.getSize(u, (w, h) => setShotRaw({ uri: u, w, h }), () => setShotRaw({ uri: u, w: 1000, h: 1400 }));
+    Image.getSize(u, (w, h) => setShotRaw({ uri: u, w: w > 0 ? w : 1000, h: h > 0 ? h : 1400 }), () => setShotRaw({ uri: u, w: 1000, h: 1400 }));
   }
   // Start with a box just inside the photo's edges.
   useEffect(() => {
@@ -83,8 +84,10 @@ export default function SnapCamera({ visible, accent, onDone }: { visible: boole
   fitRef.current = fit;
 
   async function pickGallery() {
-    const r = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.8 });
-    if (!r.canceled && r.assets?.length) setShot(r.assets[0].uri);
+    try {
+      const r = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.8 });
+      if (!r.canceled && r.assets?.length) setShot(r.assets[0].uri);
+    } catch {} // gallery closed or unavailable: stay on the camera
   }
 
   async function useCropped() {
@@ -93,13 +96,17 @@ export default function SnapCamera({ visible, accent, onDone }: { visible: boole
     if (!b || !fit) return finish({ uri: shot.uri });
     setWorking(true);
     try {
+      // Keep the crop inside the photo and at least 1 px, so rounding can never ask for an impossible size.
+      const originX = Math.min(Math.max(0, Math.round(b.x / fit.k)), shot.w - 1);
+      const originY = Math.min(Math.max(0, Math.round(b.y / fit.k)), shot.h - 1);
       const crop = {
-        originX: Math.max(0, Math.round(b.x / fit.k)),
-        originY: Math.max(0, Math.round(b.y / fit.k)),
-        width: Math.min(shot.w, Math.round(b.w / fit.k)),
-        height: Math.min(shot.h, Math.round(b.h / fit.k)),
+        originX,
+        originY,
+        width: Math.max(1, Math.min(shot.w - originX, Math.round(b.w / fit.k))),
+        height: Math.max(1, Math.min(shot.h - originY, Math.round(b.h / fit.k))),
       };
-      const full = crop.width >= shot.w * 0.97 && crop.height >= shot.h * 0.97;
+      const bad = ![crop.originX, crop.originY, crop.width, crop.height].every((n) => isFinite(n));
+      const full = bad || (crop.width >= shot.w * 0.97 && crop.height >= shot.h * 0.97);
       const out = full ? shot : await ImageManipulator.manipulateAsync(shot.uri, [{ crop }], { compress: 0.85, format: ImageManipulator.SaveFormat.JPEG });
       finish({ uri: out.uri });
     } catch {
@@ -123,6 +130,8 @@ export default function SnapCamera({ visible, accent, onDone }: { visible: boole
     try {
       const p = await cam.current.takePictureAsync({ quality: 0.7, exif: false, shutterSound: false });
       if (p?.uri) setShot(p.uri);
+    } catch {
+      // camera busy or closed mid-shot: just let the user tap the shutter again
     } finally {
       setShooting(false);
     }
