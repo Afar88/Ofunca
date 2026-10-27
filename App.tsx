@@ -653,6 +653,34 @@ function Main() {
   const [quiz, setQuiz] = useState<QuizCard[]>([]);
   const [quizSize, setQuizSize] = useState(10);
   const [party, setParty] = useState(false);
+  // Questions answered wrong are kept (across restarts) for a "Review my mistakes" round.
+  const [mistakes, setMistakes] = useState<QuizCard[]>([]);
+  const [reviewing, setReviewing] = useState(false);
+  function pick(q: QuizCard, oi: number) {
+    setQuiz((prev) => prev.map((x) => (x.id === q.id ? { ...x, picked: oi, revealed: true } : x)));
+    const key = q.question.toLowerCase();
+    if (oi !== q.correct) {
+      setMistakes((prev) => (prev.some((m) => m.question.toLowerCase() === key) ? prev : [...prev, { ...q, picked: undefined, revealed: false }].slice(-60)));
+    } else if (reviewing) {
+      setMistakes((prev) => prev.filter((m) => m.question.toLowerCase() !== key)); // got it right now: mastered
+    }
+  }
+  function startReview() {
+    const shuffle = <T,>(a: T[]) => {
+      for (let i = a.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [a[i], a[j]] = [a[j], a[i]];
+      }
+      return a;
+    };
+    const round = shuffle(mistakes.slice()).slice(0, 20).map((m) => {
+      const opts = m.options ?? [];
+      const order = shuffle(opts.map((_, i) => i));
+      return { ...m, id: makeId('r'), options: order.map((i) => opts[i]), correct: order.indexOf(m.correct ?? 0), picked: undefined, revealed: false };
+    });
+    setReviewing(true);
+    setQuiz(round);
+  }
   const celebrated = useRef('');
   useEffect(() => {
     const mcq = quiz.filter((q) => q.options);
@@ -668,7 +696,9 @@ function Main() {
   // ---------- Saved history: answers and quizzes are still there after closing the app ----------
   const historyLoaded = useRef(false);
   useEffect(() => {
-    loadHistory<{ qas?: QA[]; quiz?: QuizCard[] }>().then((h) => {
+    loadHistory<{ qas?: QA[]; quiz?: QuizCard[]; mistakes?: QuizCard[]; reviewing?: boolean }>().then((h) => {
+      if (h?.mistakes) setMistakes(h.mistakes);
+      if (h?.reviewing) setReviewing(true);
       if (h?.qas) setQas(h.qas.map((x) => ({ ...x, done: true, answer: x.answer || NOT_FOUND })));
       if (h?.quiz) {
         setQuiz(h.quiz);
@@ -685,15 +715,17 @@ function Main() {
       saveHistory({
         qas: qas.filter((x) => x.done).map((x) => ({ ...x, hits: x.hits.map((h) => ({ ...h, chunk: lite(h.chunk) })) })),
         quiz: quiz.map((z) => ({ ...z, source: lite(z.source) })),
+        mistakes: mistakes.map((z) => ({ ...z, source: lite(z.source) })),
+        reviewing,
       });
     }, 400);
     return () => clearTimeout(t);
-  }, [qas, quiz, generating]);
+  }, [qas, quiz, mistakes, reviewing, generating]);
 
   function confirmClear(what: 'chat' | 'quiz') {
     Alert.alert(what === 'chat' ? 'Clear all questions?' : 'Clear this quiz?', 'This only removes the history. Your notes stay.', [
       { text: 'Cancel', style: 'cancel' },
-      { text: 'Clear', style: 'destructive', onPress: () => (what === 'chat' ? setQas([]) : setQuiz([])) },
+      { text: 'Clear', style: 'destructive', onPress: () => (what === 'chat' ? setQas([]) : (setQuiz([]), setReviewing(false))) },
     ]);
   }
   function deleteQa(id: string) {
@@ -710,6 +742,7 @@ function Main() {
       return;
     }
     setQuiz([]);
+    setReviewing(false);
     await guarded('Writing quiz…', async () => {
       const excerpts = quizExcerpts(pool, quizSize, scopeValid === AUTO ? (c) => subjectByDoc[c.docId] ?? '' : undefined);
       const asked: string[] = [];
@@ -1038,6 +1071,16 @@ function Main() {
             <Pressable style={[s.btn, (!!busy || !chunks.length) && s.btnDisabled]} disabled={!!busy || !chunks.length} onPress={makeQuiz}>
               <Text style={s.btnText}>{quiz.length ? '🔄 New quiz' : '🧠 Quiz me'}</Text>
             </Pressable>
+            {mistakes.length > 0 && (
+              <Pressable style={[s.btnGhost, !!busy && s.btnDisabled]} disabled={!!busy} onPress={startReview}>
+                <Text style={s.btnGhostText}>🔁 Review my mistakes ({mistakes.length})</Text>
+              </Pressable>
+            )}
+            {reviewing && quiz.length > 0 && (
+              <Text style={[s.small, { textAlign: 'center', marginTop: 8 }]}>
+                Mistakes round: get one right and it leaves your list. {mistakes.length ? `${mistakes.length} left.` : 'All mastered! 🌟'}
+              </Text>
+            )}
             {quiz.length > 0 && !busy && (
               <Pressable onPress={() => confirmClear('quiz')} hitSlop={8} style={{ alignSelf: 'center', marginTop: 10 }}>
                 <Text style={s.clearLink}>Clear quiz</Text>
@@ -1062,7 +1105,7 @@ function Main() {
                         <Pressable
                           key={oi}
                           disabled={done}
-                          onPress={() => setQuiz((prev) => prev.map((x) => (x.id === q.id ? { ...x, picked: oi, revealed: true } : x)))}
+                          onPress={() => pick(q, oi)}
                           style={[s.opt, done && isRight && s.optRight, done && isPicked && !isRight && s.optWrong]}
                         >
                           <Text style={s.optText}>
