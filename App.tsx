@@ -220,9 +220,6 @@ function MenuRow(p: { C: any; icon: string; label: string; hint?: string; onPres
   );
 }
 
-// Size limits keep a mid-range phone fast and stop huge imports from running out of memory.
-const LIMITS = { pdfPages: 200, pdfMB: 50, textChars: 200_000, pasteChars: 50_000, subjects: 20, subjectName: 24, libraryChunks: 3000 };
-
 export default function App() {
   const [intro, setIntro] = useState(true);
   return (
@@ -446,9 +443,6 @@ function Main() {
   // ---------- Indexing ----------
   async function indexDoc(name: string, kind: NoteDoc['kind'], raw: RawChunk[], subject: string) {
     if (!raw.length) throw new Error('No readable text found.');
-    const used = docs.reduce((n, d) => n + (d.chunkCount ?? 0), 0);
-    if (used + raw.length > LIMITS.libraryChunks)
-      throw new Error(`Your library is full (about 1,500 pages of notes). Delete some old notes to make room for this one.`);
     const say = throttled((t) => setBusy(t));
     const vecs = await embedDocuments(
       raw.map((c) => c.text),
@@ -511,15 +505,7 @@ function Main() {
   function pickSubject(title: string, initial = ''): Promise<string | null> {
     return new Promise((resolve) => setPicker({ title, value: initial, resolve }));
   }
-  /** True when this subject can be used: an existing one, or a new one while there's room. */
-  function subjectRoom(v: string) {
-    const name = v.trim() || GENERAL;
-    if (subjects.includes(name) || subjects.length < LIMITS.subjects) return true;
-    Alert.alert('Subject limit reached', `You can have up to ${LIMITS.subjects} subjects. Pick one you already have, or delete an empty subject first.`);
-    return false;
-  }
   function closePicker(v: string | null) {
-    if (v != null && !subjectRoom(v)) return;
     picker?.resolve(v == null ? null : v.trim() || GENERAL);
     setPicker(null);
   }
@@ -539,10 +525,6 @@ function Main() {
     if (res.canceled || !res.assets?.length) return;
     const f = res.assets[0];
     const isPdf = (f.mimeType ?? '').includes('pdf') || f.name.toLowerCase().endsWith('.pdf');
-    if (isPdf && (f.size ?? 0) > LIMITS.pdfMB * 1e6) {
-      Alert.alert('PDF too large', `PDFs up to ${LIMITS.pdfMB} MB work best. Split this one into smaller parts and import them one by one.`);
-      return;
-    }
     const subject = await pickSubject('Which subject is this for?');
     if (!subject) return;
     await guarded('Reading file…', async () => {
@@ -551,12 +533,10 @@ function Main() {
         const b64 = await FS.readAsStringAsync(f.uri, { encoding: FS.EncodingType.Base64 });
         const say = throttled((t) => setBusy(t));
         const pages = await pdf.current!.extract(b64, (p, t) => say(`Reading PDF… page ${p}/${t}`, p === t));
-        if (pages.length > LIMITS.pdfPages)
-          Alert.alert('Long PDF', `Ofunca kept the first ${LIMITS.pdfPages} of ${pages.length} pages. Import the rest as a separate PDF.`);
-        raw = chunkPages(pages.slice(0, LIMITS.pdfPages));
+        raw = chunkPages(pages);
         if (!raw.length) throw new Error('This PDF has no selectable text (it may be scanned). Try "Snap notes" on a photo of the page instead.');
       } else {
-        raw = chunkText((await FS.readAsStringAsync(f.uri)).slice(0, LIMITS.textChars));
+        raw = chunkText((await FS.readAsStringAsync(f.uri))));
       }
       await indexDoc(f.name.replace(/\.(pdf|txt|md)$/i, ''), isPdf ? 'pdf' : 'text', raw, subject);
       FS.deleteAsync(f.uri, { idempotent: true }).catch(() => {});
@@ -653,7 +633,6 @@ function Main() {
   async function saveEditor() {
     if (!editor) return;
     const { title, text, mode, subject } = editor;
-    if (!subjectRoom(subject)) return;
     if (text.trim().length < 30) {
       Alert.alert('Too short', 'Add a bit more text (at least a couple of sentences).');
       return;
@@ -1343,13 +1322,9 @@ function Main() {
                 onChangeText={(t) => setEditor((e) => (e ? { ...e, text: t } : e))}
                 placeholder="Paste or type your notes here…"
                 placeholderTextColor={C.muted}
-                maxLength={LIMITS.pasteChars}
                 multiline
                 textAlignVertical="top"
               />
-              <Text style={[s.small, { textAlign: 'right', marginTop: 6 }]}>
-                {(editor?.text.length ?? 0).toLocaleString()} / {LIMITS.pasteChars.toLocaleString()}
-              </Text>
               <Pressable style={s.btn} onPress={saveEditor}>
                 <Text style={s.btnText}>Save & index on-device</Text>
               </Pressable>
@@ -1616,7 +1591,6 @@ function SubjectSelect({ subjects, value, onChange }: { subjects: string[]; valu
         style={s.field}
         value={subjects.includes(value) ? '' : value}
         onChangeText={onChange}
-        maxLength={LIMITS.subjectName}
         placeholder={subjects.length ? 'Or type a new subject' : 'e.g. Biology, Economics, Maths'}
         placeholderTextColor={C.muted}
         autoCapitalize="words"
