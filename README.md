@@ -79,6 +79,7 @@ The release APK requests only:
 - `INTERNET` for the one-time model download
 - `ACCESS_NETWORK_STATE` for the offline indicator
 - `CAMERA` for Ofunca's in-app camera in *Snap notes* (asked the first time you snap)
+- `VIBRATE` for the short haptic tick (right) or double buzz (wrong) when you answer a quiz question. It is a normal permission with no prompt. Without it Android stopped the app on the first quiz answer, fixed in v1.0.12.
 
 Files and gallery photos are opened with the Android system picker (Storage Access Framework), so the app needs **no storage or media permissions**. Storage, media, microphone, overlay, SMS, contacts, location and install-packages permissions are all explicitly removed in `app.json` (`blockedPermissions`). The release build is not debuggable. It is signed with APK Signature Scheme v2 + v3, with no packers and no downloaded executable code (only model weights are downloaded). R8 shrinking is enabled by QVAC's official Expo plugin; this is the standard Android Gradle tool, not an obfuscating packer.
 

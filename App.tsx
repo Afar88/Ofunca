@@ -800,7 +800,9 @@ function Main() {
   const [reviewing, setReviewing] = useState(false);
   function pick(q: QuizCard, oi: number) {
     setQuiz((prev) => prev.map((x) => (x.id === q.id ? { ...x, picked: oi, revealed: true } : x)));
-    Vibration.vibrate(oi === q.correct ? 12 : [0, 35, 70, 35]); // tiny tick for right, double buzz for wrong
+    try {
+      Vibration.vibrate(oi === q.correct ? 12 : [0, 35, 70, 35]); // tiny tick for right, double buzz for wrong
+    } catch {} // a buzz is a nice-to-have; it must never take the quiz down
     const key = q.question.toLowerCase();
     if (oi !== q.correct) {
       setMistakes((prev) => (prev.some((m) => m.question.toLowerCase() === key) ? prev : [...prev, { ...q, picked: undefined, revealed: false }].slice(-60)));
