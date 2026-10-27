@@ -12,6 +12,9 @@ export function Intro({ onDone }: { onDone: () => void }) {
   const burst = useRef(new Animated.Value(0)).current;
   const title = useRef(new Animated.Value(0)).current;
   const fade = useRef(new Animated.Value(1)).current;
+  // "Ofunca" drops in from above, bounces, then each letter does a little hop in a wave.
+  const LETTERS = 'Ofunca'.split('');
+  const hops = useRef(LETTERS.map(() => new Animated.Value(0))).current;
   const done = useRef(false);
 
   const finish = () => {
@@ -29,11 +32,20 @@ export function Intro({ onDone }: { onDone: () => void }) {
       Animated.parallel([
         Animated.timing(burst, { toValue: 1, duration: 700, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
         Animated.sequence([wiggle(-1), wiggle(1), wiggle(-1), wiggle(1), wiggle(0, 120)]),
-        Animated.spring(title, { toValue: 1, friction: 5, delay: 200, useNativeDriver: true }),
+        Animated.spring(title, { toValue: 1, friction: 4, tension: 90, delay: 150, useNativeDriver: true }),
       ]),
-      Animated.delay(350),
+      Animated.stagger(
+        70,
+        hops.map((h) =>
+          Animated.sequence([
+            Animated.timing(h, { toValue: 1, duration: 140, easing: Easing.out(Easing.quad), useNativeDriver: true }),
+            Animated.timing(h, { toValue: 0, duration: 160, easing: Easing.in(Easing.quad), useNativeDriver: true }),
+          ]),
+        ),
+      ),
+      Animated.delay(300),
     ]).start(() => finish());
-    const t = setTimeout(finish, 3000); // safety net
+    const t = setTimeout(finish, 3600); // safety net
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -75,10 +87,27 @@ export function Intro({ onDone }: { onDone: () => void }) {
           style={{
             alignItems: 'center',
             opacity: title,
-            transform: [{ translateY: title.interpolate({ inputRange: [0, 1], outputRange: [30, 0] }) }],
+            transform: [{ translateY: title.interpolate({ inputRange: [0, 1], outputRange: [-160, 0] }) }],
           }}
         >
-          <Text style={st.name}>Ofunca</Text>
+          <View style={{ flexDirection: 'row' }}>
+            {LETTERS.map((ch, i) => (
+              <Animated.Text
+                key={i}
+                style={[
+                  st.name,
+                  {
+                    transform: [
+                      { translateY: hops[i].interpolate({ inputRange: [0, 1], outputRange: [0, -18] }) },
+                      { rotate: hops[i].interpolate({ inputRange: [0, 1], outputRange: ['0deg', i % 2 ? '10deg' : '-10deg'] }) },
+                    ],
+                  },
+                ]}
+              >
+                {ch}
+              </Animated.Text>
+            ))}
+          </View>
           <Text style={st.tag}>Your notes. Your tutor. No signal needed.</Text>
         </Animated.View>
       </Pressable>

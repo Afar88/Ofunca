@@ -245,11 +245,7 @@ function Main() {
   // The three add-notes buttons always stay bright. While one is working, the others politely say "one moment".
   const [lastAction, setLastAction] = useState<'import' | 'snap' | 'paste' | null>(null);
   function act(which: 'import' | 'snap' | 'paste', fn: () => Promise<void> | void) {
-    if (busy) {
-      Alert.alert('One moment ⏳', `Ofunca is still busy: ${busy.replace(/…$/, '')}. You can add more notes as soon as it's done.`);
-      return;
-    }
-    setLastAction(which);
+    if (!busy) setLastAction(which);
     fn();
   }
   const [aboutOpen, setAboutOpen] = useState<null | 'privacy' | 'built'>(null);
@@ -434,8 +430,28 @@ function Main() {
     await refreshLibrary();
   }
 
-  async function guarded(label: string, fn: () => Promise<void>, needs: 'embed' | 'llm' = 'embed', onFail?: () => void) {
-    if (busy) return;
+  // Jobs line up instead of being refused: tap Snap, Import and Paste in any order and each one
+  // runs as soon as the one before it finishes. (One AI job at a time keeps the phone from crashing.)
+  const jobChain = useRef<Promise<void>>(Promise.resolve());
+  const [queued, setQueued] = useState(0);
+  const running = useRef(0);
+  function guarded(label: string, fn: () => Promise<void>, needs: 'embed' | 'llm' = 'embed', onFail?: () => void): Promise<void> {
+    const waiting = running.current > 0;
+    if (waiting) setQueued((q) => q + 1);
+    running.current++;
+    const go = async () => {
+      if (waiting) setQueued((q) => Math.max(0, q - 1));
+      try {
+        await runJob(label, fn, needs, onFail);
+      } finally {
+        running.current--;
+      }
+    };
+    const p = jobChain.current.then(go, go);
+    jobChain.current = p.catch(() => {});
+    return p;
+  }
+  async function runJob(label: string, fn: () => Promise<void>, needs: 'embed' | 'llm', onFail?: () => void) {
     const ready = () => (needs === 'llm' ? isReady() : isEmbedReady());
     setBusy(label);
     try {
@@ -500,7 +516,22 @@ function Main() {
   }
 
   // ---------- Paste & Snap modals ----------
-  const [editor, setEditor] = useState<null | { mode: 'paste' | 'ocr'; title: string; text: string; subject: string; ocr?: OcrResult }>(null);
+  type EditorState = { mode: 'paste' | 'ocr'; title: string; text: string; subject: string; ocr?: OcrResult };
+  const [editor, setEditor] = useState<null | EditorState>(null);
+  const editorOpen = useRef(false);
+  const editorQueue = useRef<EditorState[]>([]);
+  useEffect(() => {
+    editorOpen.current = !!editor;
+    if (!editor && editorQueue.current.length) {
+      const next = editorQueue.current.shift()!;
+      setTimeout(() => setEditor(next), 350); // let the closing sheet finish sliding away
+    }
+  }, [editor]);
+  /** Opens the review box, or lines it up if another one is open (e.g. a photo finished while pasting). */
+  function openEditor(e: EditorState) {
+    if (editorOpen.current) editorQueue.current.push(e);
+    else setEditor(e);
+  }
 
   async function snapNotes() {
     // Uses the system file/gallery picker (no camera or storage permission needed).
@@ -553,7 +584,7 @@ function Main() {
         setBusy('Getting the tutor ready again…');
         await reloadLlm(device);
         if (!r.text.trim()) throw new Error('No text was found in this photo. Try a sharper, well-lit photo taken straight on.');
-        setEditor({ mode: 'ocr', title: 'Snapped notes ' + new Date().toLocaleDateString(), text: r.text, subject: subjects[0] ?? '', ocr: r });
+        openEditor({ mode: 'ocr', title: 'Snapped notes ' + new Date().toLocaleDateString(), text: r.text, subject: subjects[0] ?? '', ocr: r });
       } finally {
         releaseOcr().catch(() => {});
         reloadLlm(device).catch(() => {});
@@ -957,7 +988,7 @@ function Main() {
             <View style={s.actions}>
               <ActionBtn icon="📄" label="Import PDF / text" active={busy ? lastAction === 'import' : false} onPress={() => act('import', importFile)} />
               <ActionBtn icon="📷" label="Snap notes" active={busy ? lastAction === 'snap' : false} onPress={() => act('snap', snapNotes)} />
-              <ActionBtn icon="📋" label="Paste text" onPress={() => act('paste', async () => setEditor({ mode: 'paste', title: '', text: '', subject: subjects[0] ?? '' }))} />
+              <ActionBtn icon="📋" label="Paste text" onPress={() => act('paste', async () => openEditor({ mode: 'paste', title: '', text: '', subject: subjects[0] ?? '' }))} />
             </View>
             {!hideGuide && (
               <View style={s.card}>
@@ -1190,7 +1221,7 @@ function Main() {
       {busy && (
         <View style={s.busy}>
           <ActivityIndicator color="#fff" />
-          <Text style={s.busyText}>{busy}</Text>
+          <Text style={s.busyText}>{busy}{queued > 0 ? `  ·  ${queued} more lined up` : ''}</Text>
         </View>
       )}
 
