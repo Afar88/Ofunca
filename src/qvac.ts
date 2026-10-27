@@ -370,7 +370,7 @@ const QUERY_PREFIX = 'task: search result | query: ';
 export async function embedDocuments(texts: string[], onProgress?: (done: number, total: number) => void): Promise<number[][]> {
   if (!embedId) throw new Error('Models are not loaded yet');
   const out: number[][] = [];
-  const BATCH = 16;
+  const BATCH = 32; // fewer round trips to the engine: noticeably faster indexing on CPU
   for (let i = 0; i < texts.length; i += BATCH) {
     const batch = texts.slice(i, i + BATCH).map((t) => DOC_PREFIX + t);
     const { embedding } = await embed({ modelId: embedId, text: batch });

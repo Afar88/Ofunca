@@ -24,13 +24,13 @@ async function ensureOcr() {
     modelConfig: {
       langList: ['en'],
       magRatio: 1.0,
-      canvasSize: 1280, // keeps the text detector's memory small so phones don't run out
+      canvasSize: 1024, // keeps the text detector's memory small so phones don't run out
       backendDevice: 'cpu',
       nThreads: 4,
       defaultRotationAngles: [], // photos are usually upright; skipping rotations is much faster
       contrastRetry: false,
       lowConfidenceThreshold: 0.5,
-      recognizerBatchSize: 1,
+      recognizerBatchSize: 4, // reads several lines per pass
     },
   } as any);
   return ocrId;
@@ -82,8 +82,8 @@ function toLines(blocks: Block[]): { text: string; conf: number }[] {
 export async function recognise(imageUri: string, onStatus?: (s: string) => void): Promise<OcrResult> {
   onStatus?.('Preparing photo…');
   // Downscale big camera photos: faster OCR and lower memory, with no visible accuracy loss on pages.
-  const small = await ImageManipulator.manipulateAsync(imageUri, [{ resize: { width: 1280 } }], {
-    compress: 0.9,
+  const small = await ImageManipulator.manipulateAsync(imageUri, [{ resize: { width: 1024 } }], {
+    compress: 0.85,
     format: ImageManipulator.SaveFormat.JPEG,
   });
   onStatus?.('Loading OCR model…');

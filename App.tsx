@@ -11,7 +11,8 @@ import {
   Image,
   Modal,
   Platform,
-  Pressable,
+  Pressable as RNPressable,
+  Vibration,
   ScrollView,
   StyleSheet,
   Text,
@@ -76,6 +77,36 @@ import {
   search,
   type Hit, splitQuestions, bestDocHits } from './src/rag';
 import { SAMPLE_NOTES, SAMPLE_TITLE } from './src/sample';
+
+// Every button answers the finger at once: a soft dim while pressed (plus the Android ripple), so taps
+// feel instant even when the work behind them takes a moment. Full-screen backdrops are left alone.
+function Pressable(props: React.ComponentProps<typeof RNPressable>) {
+  const { style, android_ripple, ...rest } = props;
+  return (
+    <RNPressable
+      {...rest}
+      android_ripple={android_ripple}
+      style={(st) => {
+        const base = typeof style === 'function' ? style(st) : style;
+        const flat: any = StyleSheet.flatten(base) || {};
+        if (!st.pressed || props.disabled || flat.flex === 1) return base;
+        return [base, { opacity: 0.72, transform: [...(flat.transform ?? []), { scale: 0.97 }] }];
+      }}
+    />
+  );
+}
+
+/** Throttles progress text so long jobs don't redraw the whole screen dozens of times a second. */
+function throttled(fn: (t: string) => void, ms = 250) {
+  let last = 0;
+  return (t: string, force = false) => {
+    const now = Date.now();
+    if (force || now - last >= ms) {
+      last = now;
+      fn(t);
+    }
+  };
+}
 
 type Tab = 'notes' | 'ask' | 'quiz';
 type Phase = 'checking' | 'needDownload' | 'downloading' | 'loading' | 'ready' | 'error';
@@ -379,9 +410,10 @@ function Main() {
   // ---------- Indexing ----------
   async function indexDoc(name: string, kind: NoteDoc['kind'], raw: RawChunk[], subject: string) {
     if (!raw.length) throw new Error('No readable text found.');
+    const say = throttled((t) => setBusy(t));
     const vecs = await embedDocuments(
       raw.map((c) => c.text),
-      (d, t) => setBusy(`Indexing on-device… ${d}/${t}`),
+      (d, t) => say(`Learning your notes… ${Math.round((d / t) * 100)}%`, d === t),
     );
     const docId = makeId('d');
     const stored: StoredChunk[] = raw.map((c, i) => ({ id: makeId('c'), docId, page: c.page, text: c.text, vec: roundVec(vecs[i]) }));
@@ -445,7 +477,8 @@ function Main() {
       let raw: RawChunk[];
       if (isPdf) {
         const b64 = await FS.readAsStringAsync(f.uri, { encoding: FS.EncodingType.Base64 });
-        const pages = await pdf.current!.extract(b64, (p, t) => setBusy(`Reading PDF… page ${p}/${t}`));
+        const say = throttled((t) => setBusy(t));
+        const pages = await pdf.current!.extract(b64, (p, t) => say(`Reading PDF… page ${p}/${t}`, p === t));
         raw = chunkPages(pages);
         if (!raw.length) throw new Error('This PDF has no selectable text (it may be scanned). Try "Snap notes" on a photo of the page instead.');
       } else {
@@ -487,11 +520,11 @@ function Main() {
           Alert.alert('Camera not allowed', 'Allow camera access in Settings, or pick a photo from your gallery.');
           return;
         }
-        const r = await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 0.8 });
+        const r = await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 0.7 });
         if (r.canceled || !r.assets?.length) return;
         uri = r.assets[0].uri;
       } else {
-        const r = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.8 });
+        const r = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.7 });
         if (r.canceled || !r.assets?.length) return;
         uri = r.assets[0].uri;
       }
@@ -658,6 +691,7 @@ function Main() {
   const [reviewing, setReviewing] = useState(false);
   function pick(q: QuizCard, oi: number) {
     setQuiz((prev) => prev.map((x) => (x.id === q.id ? { ...x, picked: oi, revealed: true } : x)));
+    Vibration.vibrate(oi === q.correct ? 12 : [0, 35, 70, 35]); // tiny tick for right, double buzz for wrong
     const key = q.question.toLowerCase();
     if (oi !== q.correct) {
       setMistakes((prev) => (prev.some((m) => m.question.toLowerCase() === key) ? prev : [...prev, { ...q, picked: undefined, revealed: false }].slice(-60)));
