@@ -292,15 +292,30 @@ export function parseMcq(raw: string): { question: string; answer: string; optio
   }
 }
 
-/** n excerpts for an n-question quiz; repeats excerpts (shuffled) when the notes are short. */
-export function quizExcerpts(chunks: StoredChunk[], n: number): StoredChunk[] {
-  const rich = chunks.filter((c) => c.text.length > 200);
-  const pool = (rich.length ? rich : chunks).slice();
-  for (let i = pool.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [pool[i], pool[j]] = [pool[j], pool[i]];
+/** n excerpts for an n-question quiz. When groupOf is given (mixed subjects), takes turns between
+ *  subjects so every subject gets a fair share; repeats excerpts when the notes are short. */
+export function quizExcerpts(chunks: StoredChunk[], n: number, groupOf?: (c: StoredChunk) => string): StoredChunk[] {
+  const shuffle = <T,>(a: T[]) => {
+    for (let i = a.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [a[i], a[j]] = [a[j], a[i]];
+    }
+    return a;
+  };
+  const groups = new Map<string, StoredChunk[]>();
+  for (const c of chunks) {
+    const k = groupOf ? groupOf(c) : '';
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k)!.push(c);
   }
+  const pools = shuffle([...groups.values()]).map((g) => {
+    const rich = g.filter((c) => c.text.length > 200);
+    return shuffle((rich.length ? rich : g).slice());
+  });
   const out: StoredChunk[] = [];
-  for (let i = 0; i < n && pool.length; i++) out.push(pool[i % pool.length]);
+  for (let i = 0; out.length < n && pools.length; i++) {
+    const pool = pools[i % pools.length];
+    out.push(pool[Math.floor(i / pools.length) % pool.length]);
+  }
   return out;
 }

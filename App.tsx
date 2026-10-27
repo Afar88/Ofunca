@@ -558,7 +558,7 @@ function Main() {
     }
     setQuiz([]);
     await guarded('Writing quiz…', async () => {
-      const excerpts = quizExcerpts(pool, quizSize);
+      const excerpts = quizExcerpts(pool, quizSize, scopeValid === AUTO ? (c) => subjectByDoc[c.docId] ?? '' : undefined);
       const asked: string[] = [];
       let made = 0;
       for (let i = 0; i < excerpts.length + 4 && made < quizSize; i++) {
@@ -872,7 +872,12 @@ function Main() {
 
         {tab === 'quiz' && (
           <ScrollView contentContainerStyle={s.pad}>
-            {subjects.length > 1 && <SubjectChips subjects={subjects} value={scopeValid} onChange={setScope} autoLabel="All" inline />}
+            {subjects.length > 1 && (
+              <>
+                <Text style={[s.small, { textAlign: 'center', marginBottom: 6 }]}>Quiz me on one subject, or mix them all:</Text>
+                <SubjectChips subjects={subjects} value={scopeValid} onChange={setScope} autoLabel="🔀 Mix all" inline />
+              </>
+            )}
             <View style={{ flexDirection: 'row', justifyContent: 'center', gap: 8, marginBottom: 10, alignItems: 'center' }}>
               <Text style={s.small}>Questions:</Text>
               {QUIZ_SIZES.map((n) => (
@@ -907,7 +912,7 @@ function Main() {
             )}
             {quiz.map((q, i) => (
               <View key={q.id} style={s.card}>
-                <Text style={s.qNum}>Question {i + 1}</Text>
+                <Text style={s.qNum}>Question {i + 1}{scopeValid === AUTO && subjects.length > 1 ? ` · ${subjectByDoc[q.source.docId] ?? ''}` : ''}</Text>
                 <Text style={s.qText}>{q.question}</Text>
                 {q.options ? (
                   <>
