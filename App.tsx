@@ -55,6 +55,7 @@ import { ocrCached, recognise, releaseOcr, type OcrResult } from './src/ocr';
 import { installBundledOcr, unloadLlm, reloadLlm } from './src/qvac';
 import { checkForUpdate } from './src/update';
 import { Intro } from './src/Intro';
+import { Confetti } from './src/Confetti';
 import {
   NOT_FOUND,
   cleanAnswer,
@@ -566,13 +567,28 @@ function Main() {
   // ---------- Quiz ----------
   const [quiz, setQuiz] = useState<QuizCard[]>([]);
   const [quizSize, setQuizSize] = useState(10);
+  const [party, setParty] = useState(false);
+  const celebrated = useRef('');
+  useEffect(() => {
+    const mcq = quiz.filter((q) => q.options);
+    if (!mcq.length || busy) return;
+    const key = mcq.map((q) => q.id).join(',');
+    if (celebrated.current === key) return;
+    if (mcq.every((q) => q.picked !== undefined && q.picked === q.correct)) {
+      celebrated.current = key;
+      setParty(true);
+    }
+  }, [quiz, busy]);
 
   // ---------- Saved history: answers and quizzes are still there after closing the app ----------
   const historyLoaded = useRef(false);
   useEffect(() => {
     loadHistory<{ qas?: QA[]; quiz?: QuizCard[] }>().then((h) => {
       if (h?.qas) setQas(h.qas.map((x) => ({ ...x, done: true, answer: x.answer || NOT_FOUND })));
-      if (h?.quiz) setQuiz(h.quiz);
+      if (h?.quiz) {
+        setQuiz(h.quiz);
+        celebrated.current = h.quiz.filter((q) => q.options).map((q) => q.id).join(',');
+      }
       historyLoaded.current = true;
     });
   }, []);
@@ -989,6 +1005,7 @@ function Main() {
         )}
       </View>
 
+      {party && <Confetti onDone={() => setParty(false)} />}
       {busy && (
         <View style={s.busy}>
           <ActivityIndicator color="#fff" />
