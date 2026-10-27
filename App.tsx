@@ -1395,23 +1395,32 @@ function Main() {
 
               <Text style={s.menuHead}>Look & speed</Text>
               <View style={s.menuGroup}>
+                <Text style={s.segLabel}>Theme</Text>
                 <View style={s.segment}>
-                  <Text style={[s.small, { width: 74 }]}>Theme</Text>
-                  {(['system', 'light', 'dark'] as ThemePref[]).map((t) => (
+                  {([
+                    ['system', 'phone-portrait-outline', 'Auto'],
+                    ['light', 'sunny-outline', 'Light'],
+                    ['dark', 'moon-outline', 'Dark'],
+                  ] as [ThemePref, string, string][]).map(([t, icon, label]) => (
                     <Pressable key={t} onPress={() => chooseTheme(t)} style={[s.segBtn, themePref === t && s.segBtnOn]}>
-                      <Text style={[s.segText, themePref === t && s.segTextOn]}>{t === 'system' ? 'Auto' : t === 'light' ? '☀ Light' : '☾ Dark'}</Text>
+                      <Ionicons name={icon as any} size={15} color={themePref === t ? '#fff' : C.muted} />
+                      <Text style={[s.segText, themePref === t && s.segTextOn]} numberOfLines={1}>{label}</Text>
                     </Pressable>
                   ))}
                 </View>
+                <Text style={s.segLabel}>AI runs on</Text>
                 <View style={s.segment}>
-                  <Text style={[s.small, { width: 74 }]}>AI runs on</Text>
-                  {(['cpu', 'gpu'] as Device[]).map((d) => (
+                  {([
+                    ['cpu', 'hardware-chip-outline'],
+                    ['gpu', 'flash-outline'],
+                  ] as [Device, string][]).map(([d, icon]) => (
                     <Pressable key={d} onPress={() => { setMenu(false); switchDevice(d); }} style={[s.segBtn, device === d && s.segBtnOn]}>
-                      <Text style={[s.segText, device === d && s.segTextOn]}>{d.toUpperCase()}</Text>
+                      <Ionicons name={icon as any} size={15} color={device === d ? '#fff' : C.muted} />
+                      <Text style={[s.segText, device === d && s.segTextOn]} numberOfLines={1}>{d.toUpperCase()}</Text>
                     </Pressable>
                   ))}
                 </View>
-                <Text style={[s.small, { marginTop: 2 }]}>Answers feel slow? Try GPU.</Text>
+                <Text style={[s.small, { marginTop: 8 }]}>Answers feel slow? Try GPU.</Text>
               </View>
 
               <Text style={s.menuHead}>My data</Text>
@@ -1823,8 +1832,9 @@ const makeStyles = () => StyleSheet.create({
   docIcon: { fontSize: 22, marginRight: 12 },
   docName: { fontSize: 15, fontWeight: '800', color: C.text },
   del: { fontSize: 18, color: C.muted, paddingHorizontal: 6 },
-  segment: { flexDirection: 'row', alignItems: 'center', marginTop: 12 },
-  segBtn: { paddingHorizontal: 14, paddingVertical: 7, borderRadius: 16, borderWidth: 2, borderColor: C.border, borderBottomWidth: 4, marginRight: 8 },
+  segLabel: { fontSize: 12.5, fontWeight: '700', color: C.muted, marginTop: 12, marginBottom: 6 },
+  segment: { flexDirection: 'row', gap: 6 },
+  segBtn: { flex: 1, flexDirection: 'row', gap: 5, alignItems: 'center', justifyContent: 'center', paddingVertical: 8, borderRadius: 14, borderWidth: 2, borderColor: C.border, borderBottomWidth: 4 },
   segBtnOn: { backgroundColor: C.primary, borderColor: C.primaryDeep },
   segText: { fontSize: 12.5, fontWeight: '800', color: C.muted },
   segTextOn: { color: '#fff' },

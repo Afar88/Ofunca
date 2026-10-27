@@ -26,7 +26,7 @@ Students in places with expensive or unreliable data, like much of Nigeria where
 | **Quiz** | Objective A to D questions (5, 10, 15 or 20) from one subject or a mix, with instant right/wrong feedback, haptics and a score |
 | **Review my mistakes** | Wrong answers are saved (up to 60) and replayed in a shuffled review round; get one right and it leaves the list |
 | **History** | Ask and Quiz history survive app restarts |
-| **Menu** | Left drawer (two-line button, top left): Study Stash, guide, theme and speed, clear data, privacy, Built with, developer contact |
+| **Menu** | Left drawer (two-line button, top left): Study Stash, guide, theme (Auto, Light, Dark) and AI speed (CPU, GPU) as full-width buttons that always fit the drawer, clear data, privacy, Built with, developer contact |
 | **Report a problem** | Users type the issue and send it by **SMS, so no internet data is needed**, or by WhatsApp or email when online. App version, Android version and the app's last error are added automatically; 300-character cap keeps it to about two SMS |
 | **Status dot** | The header shows "On-device AI" (or "Offline · on-device AI") for a few seconds, then shrinks to a green dot; tap the dot to see it again, and tap the badge to tuck it away at once. Everything works offline |
 
