@@ -18,6 +18,7 @@ import {
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as DocumentPicker from 'expo-document-picker';
+import * as ImagePicker from 'expo-image-picker';
 import * as FS from 'expo-file-system/legacy';
 import NetInfo from '@react-native-community/netinfo';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
@@ -49,8 +50,8 @@ import {
   type Device,
 } from './src/qvac';
 import { friendlyError, type DlState, type ModelKey } from './src/modelDownload';
-import { ocrCached, recognise, type OcrResult } from './src/ocr';
-import { installBundledOcr } from './src/qvac';
+import { ocrCached, recognise, releaseOcr, type OcrResult } from './src/ocr';
+import { installBundledOcr, unloadLlm, reloadLlm } from './src/qvac';
 import { checkForUpdate } from './src/update';
 import {
   NOT_FOUND,
@@ -385,13 +386,50 @@ function Main() {
       });
       if (!ok) return;
     }
-    const res = await DocumentPicker.getDocumentAsync({ type: ['image/*'], copyToCacheDirectory: true, multiple: false });
-    if (res.canceled || !res.assets?.length) return;
-    const f = res.assets[0];
+    const source = await new Promise<'camera' | 'gallery' | null>((resolve) =>
+      Alert.alert('Snap notes', 'Take a new photo or pick one you already have.', [
+        { text: 'Cancel', style: 'cancel', onPress: () => resolve(null) },
+        { text: '🖼 Gallery', onPress: () => resolve('gallery') },
+        { text: '📷 Camera', onPress: () => resolve('camera') },
+      ], { cancelable: true, onDismiss: () => resolve(null) }),
+    );
+    if (!source) return;
+    let uri: string | undefined;
+    try {
+      if (source === 'camera') {
+        const perm = await ImagePicker.requestCameraPermissionsAsync();
+        if (!perm.granted) {
+          Alert.alert('Camera not allowed', 'Allow camera access in Settings, or pick a photo from your gallery.');
+          return;
+        }
+        const r = await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 0.8 });
+        if (r.canceled || !r.assets?.length) return;
+        uri = r.assets[0].uri;
+      } else {
+        const r = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.8 });
+        if (r.canceled || !r.assets?.length) return;
+        uri = r.assets[0].uri;
+      }
+    } catch (e: any) {
+      Alert.alert('Could not open photos', String(e?.message ?? e));
+      return;
+    }
+    const photo = uri;
     await guarded('Reading photo…', async () => {
-      const r = await recognise(f.uri, setBusy);
-      if (!r.text.trim()) throw new Error('No text was found in this photo. Try a sharper, well-lit photo taken straight on.');
-      setEditor({ mode: 'ocr', title: 'Snapped notes ' + new Date().toLocaleDateString(), text: r.text, subject: subjects[0] ?? '', ocr: r });
+      try {
+        // Make room: the tutor model steps aside while the photo reader works, then comes back.
+        setBusy('Making room for the photo reader…');
+        await unloadLlm();
+        const r = await recognise(photo, setBusy);
+        await releaseOcr();
+        setBusy('Getting the tutor ready again…');
+        await reloadLlm(device);
+        if (!r.text.trim()) throw new Error('No text was found in this photo. Try a sharper, well-lit photo taken straight on.');
+        setEditor({ mode: 'ocr', title: 'Snapped notes ' + new Date().toLocaleDateString(), text: r.text, subject: subjects[0] ?? '', ocr: r });
+      } finally {
+        releaseOcr().catch(() => {});
+        reloadLlm(device).catch(() => {});
+      }
     });
   }
 

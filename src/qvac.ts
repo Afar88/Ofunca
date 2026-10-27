@@ -333,6 +333,28 @@ export async function unloadAll() {
   }
 }
 
+/** Frees the tutor model's memory (Snap notes needs that room for the photo reader). */
+export async function unloadLlm() {
+  if (!llmId) return;
+  const id = llmId;
+  llmId = null;
+  try {
+    await unloadModel({ modelId: id, clearStorage: false });
+  } catch {}
+}
+
+let llmReload: Promise<void> | null = null;
+/** Loads the tutor model again after Snap notes; questions asked meanwhile wait for it. */
+export function reloadLlm(device: Device) {
+  if (llmId) return Promise.resolve();
+  if (!llmReload) {
+    llmReload = loadLlmModel(device).finally(() => {
+      llmReload = null;
+    });
+  }
+  return llmReload;
+}
+
 export function isReady() {
   return !!llmId && !!embedId;
 }
@@ -368,6 +390,7 @@ export async function generate(
   onToken: (fullText: string) => void,
   opts: { maxTokens?: number; temp?: number; jsonSchema?: object } = {},
 ): Promise<string> {
+  if (!llmId && llmReload) await llmReload;
   if (!llmId) throw new Error('Models are not loaded yet');
   const run = completion({
     modelId: llmId,
