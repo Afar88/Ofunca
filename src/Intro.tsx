@@ -64,9 +64,9 @@ export function Intro({ onDone }: { onDone: () => void }) {
         drops.map((d) => Animated.spring(d, { toValue: 1, friction: 5, tension: 140, useNativeDriver: true })),
       ),
       Animated.timing(tag, { toValue: 1, duration: 380, easing: Easing.out(Easing.quad), useNativeDriver: true }),
-      Animated.delay(450),
+      Animated.delay(1100), // hold the finished logo so it can be enjoyed
     ]).start(() => finish());
-    const t = setTimeout(finish, 5500); // safety net
+    const t = setTimeout(finish, 7000); // safety net
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
