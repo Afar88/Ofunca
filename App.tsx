@@ -536,7 +536,7 @@ function Main() {
         raw = chunkPages(pages);
         if (!raw.length) throw new Error('This PDF has no selectable text (it may be scanned). Try "Snap notes" on a photo of the page instead.');
       } else {
-        raw = chunkText((await FS.readAsStringAsync(f.uri))));
+        raw = chunkText(await FS.readAsStringAsync(f.uri));
       }
       await indexDoc(f.name.replace(/\.(pdf|txt|md)$/i, ''), isPdf ? 'pdf' : 'text', raw, subject);
       FS.deleteAsync(f.uri, { idempotent: true }).catch(() => {});
