@@ -19,6 +19,7 @@ import {
   TextInput,
   View,
   useColorScheme,
+  LayoutAnimation,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -202,6 +203,24 @@ function SideDrawer(p: { open: boolean; onClose: () => void; C: any; topInset: n
   );
 }
 
+/** A drawer section that stays folded until tapped, so the menu opens as a short clean list. */
+function MenuSection(p: { C: any; icon: string; title: string; hint?: string; open?: boolean; onToggle: () => void; children?: React.ReactNode }) {
+  const { C } = p;
+  return (
+    <View style={{ marginTop: 10, borderRadius: 16, borderWidth: 1, borderColor: p.open ? C.primary : C.border, backgroundColor: C.bg, overflow: 'hidden' }}>
+      <Pressable onPress={p.onToggle} style={({ pressed }) => ({ flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 14, paddingVertical: 14, opacity: pressed ? 0.6 : 1 })} accessibilityRole="button" accessibilityState={{ expanded: p.open }}>
+        <Ionicons name={p.icon as any} size={20} color={p.open ? C.primary : C.text} />
+        <View style={{ flex: 1 }}>
+          <Text style={{ color: C.text, fontSize: 15, fontWeight: '800' }}>{p.title}</Text>
+          {!!p.hint && <Text style={{ color: C.muted, fontSize: 12, marginTop: 1 }}>{p.hint}</Text>}
+        </View>
+        <Ionicons name={p.children ? (p.open ? 'chevron-up' : 'chevron-down') : 'chevron-forward'} size={18} color={C.muted} />
+      </Pressable>
+      {p.open && !!p.children && <View style={{ paddingHorizontal: 12, paddingBottom: 8, borderTopWidth: 1, borderTopColor: C.border }}>{p.children}</View>}
+    </View>
+  );
+}
+
 function MenuRow(p: { C: any; icon: string; label: string; hint?: string; onPress: () => void; danger?: boolean; disabled?: boolean; last?: boolean }) {
   return (
     <Pressable
@@ -252,6 +271,17 @@ function Main() {
     if (!busy) setLastAction(which);
     fn();
   }
+  const [menuSec, setMenuSec] = useState<null | 'study' | 'look' | 'data' | 'about'>(null);
+  function toggleSec(k: 'study' | 'look' | 'data' | 'about') {
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    setMenuSec((v) => (v === k ? null : k));
+  }
+  useEffect(() => {
+    if (!menu) {
+      setMenuSec(null);
+      setAboutOpen(null);
+    }
+  }, [menu]);
   const [aboutOpen, setAboutOpen] = useState<null | 'app' | 'privacy' | 'built'>(null);
   const [report, setReport] = useState<string | null>(null);
   const sendReport = (via: 'sms' | 'wa' | 'mail') => {
@@ -1387,14 +1417,12 @@ function Main() {
                 </Pressable>
               </View>
 
-              <Text style={s.menuHead}>Study</Text>
-              <View style={s.menuGroup}>
+              <MenuSection C={C} icon="school-outline" title="Study" open={menuSec === 'study'} onToggle={() => toggleSec('study')}>
                 <MenuRow C={C} icon="library-outline" label="My Study Stash" hint={`${docs.length} note${docs.length === 1 ? '' : 's'}`} onPress={() => { setMenu(false); setStash(true); }} />
                 <MenuRow C={C} icon="book-outline" label={`${hideGuide ? 'Show' : 'Hide'} “How Ofunca works”`} onPress={() => { setHideGuide(!hideGuide); setMenu(false); setTab('notes'); }} last />
-              </View>
+              </MenuSection>
 
-              <Text style={s.menuHead}>Look & speed</Text>
-              <View style={s.menuGroup}>
+              <MenuSection C={C} icon="color-palette-outline" title="Look & speed" open={menuSec === 'look'} onToggle={() => toggleSec('look')}>
                 <Text style={s.segLabel}>Theme</Text>
                 <View style={s.segment}>
                   {([
@@ -1421,10 +1449,9 @@ function Main() {
                   ))}
                 </View>
                 <Text style={[s.small, { marginTop: 8 }]}>Answers feel slow? Try GPU.</Text>
-              </View>
+              </MenuSection>
 
-              <Text style={s.menuHead}>My data</Text>
-              <View style={s.menuGroup}>
+              <MenuSection C={C} icon="folder-outline" title="My data" open={menuSec === 'data'} onToggle={() => toggleSec('data')}>
                 <MenuRow C={C} icon="chatbubble-outline" label="Clear Ask history" disabled={!qas.length} onPress={() => { setMenu(false); confirmClear('chat'); }} />
                 <MenuRow C={C} icon="school-outline" label="Clear quiz" disabled={!quiz.length} onPress={() => { setMenu(false); confirmClear('quiz'); }} />
                 <MenuRow
@@ -1442,10 +1469,9 @@ function Main() {
                     ]);
                   }}
                 />
-              </View>
+              </MenuSection>
 
-              <Text style={s.menuHead}>About</Text>
-              <View style={s.menuGroup}>
+              <MenuSection C={C} icon="information-circle-outline" title="About" open={menuSec === 'about'} onToggle={() => toggleSec('about')}>
                 <MenuRow C={C} icon="information-circle-outline" label="About Ofunca" hint={`v${APP_VERSION}`} onPress={() => setAboutOpen(aboutOpen === 'app' ? null : 'app')} />
                 {aboutOpen === 'app' && (
                   <View style={s.menuNote}>
@@ -1459,7 +1485,6 @@ function Main() {
                     ))}
                   </View>
                 )}
-                <MenuRow C={C} icon="chatbox-ellipses-outline" label="Report a problem" hint="works by SMS, no data" onPress={() => { setMenu(false); setReport(''); }} />
                 <MenuRow C={C} icon="refresh-outline" label="Check for updates" onPress={() => { setMenu(false); checkForUpdate(true); }} />
                 <MenuRow C={C} icon="lock-closed-outline" label="Privacy & offline" onPress={() => setAboutOpen(aboutOpen === 'privacy' ? null : 'privacy')} />
                 {aboutOpen === 'privacy' && (
@@ -1477,7 +1502,8 @@ function Main() {
                     ))}
                   </View>
                 )}
-              </View>
+              </MenuSection>
+              <MenuSection C={C} icon="chatbox-ellipses-outline" title="Report a problem" hint="Works by SMS, no data needed" onToggle={() => { setMenu(false); setReport(''); }} />
 
             </ScrollView>
       </SideDrawer>
