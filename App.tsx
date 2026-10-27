@@ -252,7 +252,7 @@ function Main() {
     if (!busy) setLastAction(which);
     fn();
   }
-  const [aboutOpen, setAboutOpen] = useState<null | 'privacy' | 'built'>(null);
+  const [aboutOpen, setAboutOpen] = useState<null | 'app' | 'privacy' | 'built'>(null);
   const [report, setReport] = useState<string | null>(null);
   const sendReport = (via: 'sms' | 'wa' | 'mail') => {
     const err = lastErrorLine();
@@ -1446,7 +1446,21 @@ function Main() {
 
               <Text style={s.menuHead}>About</Text>
               <View style={s.menuGroup}>
-                <MenuRow C={C} icon="refresh-outline" label="Check for updates" hint={`v${APP_VERSION}`} onPress={() => { setMenu(false); checkForUpdate(true); }} />
+                <MenuRow C={C} icon="information-circle-outline" label="About Ofunca" hint={`v${APP_VERSION}`} onPress={() => setAboutOpen(aboutOpen === 'app' ? null : 'app')} />
+                {aboutOpen === 'app' && (
+                  <View style={s.menuNote}>
+                    <Text style={[s.small, { marginBottom: 10 }]}>
+                      Ofunca is an offline AI study tutor. Add your notes by PDF, photo or paste, then ask questions and take quizzes that come only from your own notes. Everything runs on your phone with Tether QVAC, even in airplane mode.
+                    </Text>
+                    <Text style={[s.menuText, { marginBottom: 2 }]}>Made by {DEV.name}</Text>
+                    <Text style={[s.small, { marginBottom: 6 }]}>Built for students who study without steady internet. Feedback welcome!</Text>
+                    {DEV.links.map((l, i) => (
+                      <MenuRow C={C} key={l.url} icon={l.icon} label={l.label} hint={l.hint} onPress={() => Linking.openURL(l.url).catch(() => {})} last={i === DEV.links.length - 1} />
+                    ))}
+                  </View>
+                )}
+                <MenuRow C={C} icon="chatbox-ellipses-outline" label="Report a problem" hint="works by SMS, no data" onPress={() => { setMenu(false); setReport(''); }} />
+                <MenuRow C={C} icon="refresh-outline" label="Check for updates" onPress={() => { setMenu(false); checkForUpdate(true); }} />
                 <MenuRow C={C} icon="lock-closed-outline" label="Privacy & offline" onPress={() => setAboutOpen(aboutOpen === 'privacy' ? null : 'privacy')} />
                 {aboutOpen === 'privacy' && (
                   <Text style={[s.small, s.menuNote]}>
@@ -1465,15 +1479,6 @@ function Main() {
                 )}
               </View>
 
-              <Text style={s.menuHead}>Developer</Text>
-              <View style={s.menuGroup}>
-                <Text style={[s.menuText, { marginBottom: 2 }]}>{DEV.name}</Text>
-                <Text style={[s.small, { marginBottom: 8 }]}>Made Ofunca for students who study without steady internet. Feedback welcome!</Text>
-                <MenuRow C={C} icon="chatbox-ellipses-outline" label="Report a problem" hint="works by SMS, no data" onPress={() => { setMenu(false); setReport(''); }} />
-                {DEV.links.map((l, i) => (
-                  <MenuRow C={C} key={l.url} icon={l.icon} label={l.label} hint={l.hint} onPress={() => Linking.openURL(l.url).catch(() => {})} last={i === DEV.links.length - 1} />
-                ))}
-              </View>
             </ScrollView>
       </SideDrawer>
 
