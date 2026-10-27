@@ -250,6 +250,13 @@ function Main() {
     fn();
   }
   const [aboutOpen, setAboutOpen] = useState<null | 'privacy' | 'built'>(null);
+  const [report, setReport] = useState<string | null>(null);
+  const sendReport = (via: 'sms' | 'wa' | 'mail') => {
+    const body = `${(report ?? '').trim()}\n\n— Ofunca v${APP_VERSION}, Android ${Platform.Version}`;
+    const enc = encodeURIComponent(body);
+    const url = via === 'sms' ? `sms:+2347040175686?body=${enc}` : via === 'wa' ? `https://wa.me/2347040175686?text=${enc}` : `mailto:destinymomobu@gmail.com?subject=${encodeURIComponent('Ofunca problem report')}&body=${enc}`;
+    Linking.openURL(url).then(() => setReport(null)).catch(() => Alert.alert('Could not open', 'No app on this phone can send that. Try another option.'));
+  };
   const [stash, setStash] = useState(false);
   const dark = themePref === 'dark' || (themePref === 'system' && sys === 'dark');
   const themeKey = dark ? 'dark' : 'light';
@@ -1419,6 +1426,7 @@ function Main() {
               <View style={s.menuGroup}>
                 <Text style={[s.menuText, { marginBottom: 2 }]}>{DEV.name}</Text>
                 <Text style={[s.small, { marginBottom: 8 }]}>Made Ofunca for students who study without steady internet. Feedback welcome!</Text>
+                <MenuRow C={C} icon="chatbox-ellipses-outline" label="Report a problem" hint="works by SMS, no data" onPress={() => { setMenu(false); setReport(''); }} />
                 {DEV.links.map((l, i) => (
                   <MenuRow C={C} key={l.url} icon={l.icon} label={l.label} hint={l.hint} onPress={() => Linking.openURL(l.url).catch(() => {})} last={i === DEV.links.length - 1} />
                 ))}
@@ -1439,6 +1447,38 @@ function Main() {
             </Pressable>
           </Pressable>
         </Pressable>
+      </Modal>
+
+      <Modal visible={report !== null} transparent animationType="fade" onRequestClose={() => setReport(null)}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
+          <Pressable style={s.scrim} onPress={() => setReport(null)}>
+            <Pressable style={s.sheet} onPress={() => {}}>
+              <Text style={s.h2}>Report a problem</Text>
+              <Text style={[s.small, { marginBottom: 10 }]}>Say what happened and what you were doing. SMS works without internet data (normal SMS rate).</Text>
+              <TextInput
+                style={[s.input, { minHeight: 110, maxHeight: 200, borderRadius: 14, textAlignVertical: 'top', flex: 0 }]}
+                multiline
+                autoFocus
+                placeholder="e.g. The app closed when I tapped Snap notes"
+                placeholderTextColor={C.muted}
+                value={report ?? ''}
+                onChangeText={setReport}
+              />
+              <Pressable style={[s.btn, !report?.trim() && { opacity: 0.5 }]} disabled={!report?.trim()} onPress={() => sendReport('sms')}>
+                <Text style={s.btnText}>Send by SMS</Text>
+              </Pressable>
+              <View style={{ flexDirection: 'row', gap: 10 }}>
+                <Pressable style={[s.btnGhost, { flex: 1 }, !report?.trim() && { opacity: 0.5 }]} disabled={!report?.trim()} onPress={() => sendReport('wa')}>
+                  <Text style={s.btnGhostText}>WhatsApp</Text>
+                </Pressable>
+                <Pressable style={[s.btnGhost, { flex: 1 }, !report?.trim() && { opacity: 0.5 }]} disabled={!report?.trim()} onPress={() => sendReport('mail')}>
+                  <Text style={s.btnGhostText}>Email</Text>
+                </Pressable>
+              </View>
+              <Text style={[s.small, { marginTop: 8, textAlign: 'center' }]}>WhatsApp and email need internet.</Text>
+            </Pressable>
+          </Pressable>
+        </KeyboardAvoidingView>
       </Modal>
 
       <PdfExtractor ref={pdf} />

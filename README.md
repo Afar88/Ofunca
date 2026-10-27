@@ -15,13 +15,18 @@ Students in places with expensive or unreliable data, like much of Nigeria where
 
 | Feature | How |
 |---|---|
-| **Import notes** | PDF (text extracted on-device with an inlined pdf.js, no network), `.txt` / `.md`, or pasted text |
-| **📷 Snap notes** | Pick a photo of a printed handout or textbook page. **QVAC OCR** reads it on-device, and the text opens in an **editable box** with a **low-confidence warning** so mistakes can be fixed before indexing. Handwriting is best effort. |
+| **Import notes** | PDF (text extracted on-device with an inlined pdf.js, no network), `.txt` / `.md`, or pasted text, filed under a subject |
+| **Snap notes** | Camera or gallery photo of a handout, textbook page or notebook. **QVAC OCR** (bundled in the APK, no extra download) reads it on-device; the text opens in an editable box with a low-confidence warning |
+| **Job queue** | Snap, Import and Paste always stay tappable; jobs queue one after another so the phone never runs two AI jobs at once |
 | **On-device indexing** | Notes are split into overlapping, sentence-aware passages and embedded with **EmbeddingGemma 300M** via QVAC `embed()` |
-| **Ask** | The question is embedded, then a hybrid search (cosine + keyword boost) finds the top passages. **Llama 3.2 1B Instruct** via QVAC `completion()` streams an answer that cites `[1]`, `[2]`, and the quoted source cards (document + page) are shown under it |
-| **Honest "not in your notes"** | Off-topic questions are refused (*"I couldn't find that in your notes."*) instead of made up |
-| **🧠 Quiz me** | Generates 4 revision questions from different parts of your notes using QVAC structured output (JSON-schema constrained generation). Tap to reveal the answer and the source passage. |
-| **Offline indicator** | The header shows **✈ Offline · on-device AI** when the phone has no connection |
+| **Ask** | Hybrid search (cosine + keyword boost) finds the top passages; **Llama 3.2 1B Instruct** via QVAC `completion()` streams an answer citing `[1]`, `[2]` with "Where from?" source cards. A watchdog stops stalled answers and puts the question back for a retry |
+| **Honest "not in your notes"** | Off-topic questions are refused instead of made up |
+| **Quiz** | Objective A to D questions (5, 10, 15 or 20) from one subject or a mix, with instant right/wrong feedback, haptics and a score |
+| **Review my mistakes** | Wrong answers are saved (up to 60) and replayed in a shuffled review round; get one right and it leaves the list |
+| **History** | Ask and Quiz history survive app restarts |
+| **Menu** | Left drawer (two-line button, top left): Study Stash, guide, theme and speed, clear data, privacy, Built with, developer contact |
+| **Report a problem** | Users type the issue and send it by **SMS, so no internet data is needed**, or by WhatsApp or email when online. App version and Android version are added automatically |
+| **Offline indicator** | The header shows when the phone has no connection; everything still works |
 
 ## How it uses QVAC
 
