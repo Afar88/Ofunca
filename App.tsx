@@ -59,6 +59,8 @@ import { ocrCached, recognise, releaseOcr, type OcrResult } from './src/ocr';
 import { installBundledOcr, unloadLlm, reloadLlm } from './src/qvac';
 import { checkForUpdate } from './src/update';
 import { Ionicons } from '@expo/vector-icons';
+import { Camera } from 'expo-camera';
+import SnapCamera, { type SnapResult } from './src/SnapCamera';
 import { Intro } from './src/Intro';
 import { noteError, lastErrorLine } from './src/lastError';
 import { Confetti } from './src/Confetti';
@@ -217,6 +219,9 @@ function MenuRow(p: { C: any; icon: string; label: string; hint?: string; onPres
     </Pressable>
   );
 }
+
+// Size limits keep a mid-range phone fast and stop huge imports from running out of memory.
+const LIMITS = { pdfPages: 200, pdfMB: 50, textChars: 200_000, pasteChars: 50_000, subjects: 20, subjectName: 24, libraryChunks: 3000 };
 
 export default function App() {
   const [intro, setIntro] = useState(true);
@@ -441,6 +446,9 @@ function Main() {
   // ---------- Indexing ----------
   async function indexDoc(name: string, kind: NoteDoc['kind'], raw: RawChunk[], subject: string) {
     if (!raw.length) throw new Error('No readable text found.');
+    const used = docs.reduce((n, d) => n + (d.chunkCount ?? 0), 0);
+    if (used + raw.length > LIMITS.libraryChunks)
+      throw new Error(`Your library is full (about 1,500 pages of notes). Delete some old notes to make room for this one.`);
     const say = throttled((t) => setBusy(t));
     const vecs = await embedDocuments(
       raw.map((c) => c.text),
@@ -501,9 +509,17 @@ function Main() {
   const subjects = subjectsOf(docs);
   const [picker, setPicker] = useState<null | { title: string; value: string; resolve: (v: string | null) => void }>(null);
   function pickSubject(title: string, initial = ''): Promise<string | null> {
-    return new Promise((resolve) => setPicker({ title, value: initial || (subjects[0] ?? ''), resolve }));
+    return new Promise((resolve) => setPicker({ title, value: initial, resolve }));
+  }
+  /** True when this subject can be used: an existing one, or a new one while there's room. */
+  function subjectRoom(v: string) {
+    const name = v.trim() || GENERAL;
+    if (subjects.includes(name) || subjects.length < LIMITS.subjects) return true;
+    Alert.alert('Subject limit reached', `You can have up to ${LIMITS.subjects} subjects. Pick one you already have, or delete an empty subject first.`);
+    return false;
   }
   function closePicker(v: string | null) {
+    if (v != null && !subjectRoom(v)) return;
     picker?.resolve(v == null ? null : v.trim() || GENERAL);
     setPicker(null);
   }
@@ -523,6 +539,10 @@ function Main() {
     if (res.canceled || !res.assets?.length) return;
     const f = res.assets[0];
     const isPdf = (f.mimeType ?? '').includes('pdf') || f.name.toLowerCase().endsWith('.pdf');
+    if (isPdf && (f.size ?? 0) > LIMITS.pdfMB * 1e6) {
+      Alert.alert('PDF too large', `PDFs up to ${LIMITS.pdfMB} MB work best. Split this one into smaller parts and import them one by one.`);
+      return;
+    }
     const subject = await pickSubject('Which subject is this for?');
     if (!subject) return;
     await guarded('Reading file…', async () => {
@@ -531,10 +551,12 @@ function Main() {
         const b64 = await FS.readAsStringAsync(f.uri, { encoding: FS.EncodingType.Base64 });
         const say = throttled((t) => setBusy(t));
         const pages = await pdf.current!.extract(b64, (p, t) => say(`Reading PDF… page ${p}/${t}`, p === t));
-        raw = chunkPages(pages);
+        if (pages.length > LIMITS.pdfPages)
+          Alert.alert('Long PDF', `Ofunca kept the first ${LIMITS.pdfPages} of ${pages.length} pages. Import the rest as a separate PDF.`);
+        raw = chunkPages(pages.slice(0, LIMITS.pdfPages));
         if (!raw.length) throw new Error('This PDF has no selectable text (it may be scanned). Try "Snap notes" on a photo of the page instead.');
       } else {
-        raw = chunkText(await FS.readAsStringAsync(f.uri));
+        raw = chunkText((await FS.readAsStringAsync(f.uri)).slice(0, LIMITS.textChars));
       }
       await indexDoc(f.name.replace(/\.(pdf|txt|md)$/i, ''), isPdf ? 'pdf' : 'text', raw, subject);
       FS.deleteAsync(f.uri, { idempotent: true }).catch(() => {});
@@ -544,7 +566,7 @@ function Main() {
   // ---------- Paste & Snap modals ----------
   type EditorState = { mode: 'paste' | 'ocr'; title: string; text: string; subject: string; ocr?: OcrResult };
   const [editor, setEditor] = useState<null | EditorState>(null);
-  const [snapPick, setSnapPick] = useState<null | ((v: 'camera' | 'gallery' | null) => void)>(null);
+  const [snapCam, setSnapCam] = useState<null | ((v: SnapResult) => void)>(null);
   // If Android closed Ofunca while the camera was open, finish reading that photo once the AI is ready.
   const pendingChecked = useRef(false);
   useEffect(() => {
@@ -586,35 +608,24 @@ function Main() {
       });
       if (!ok) return;
     }
-    const source = await new Promise<'camera' | 'gallery' | null>((resolve) => setSnapPick(() => resolve));
-    setSnapPick(null);
-    if (!source) return;
+    // Ofunca's own in-app camera: no separate camera app, so Android has no reason to close Ofunca.
     let uri: string | undefined;
     try {
-      if (source === 'camera') {
-        const perm = await ImagePicker.requestCameraPermissionsAsync();
-        if (!perm.granted) {
-          Alert.alert('Camera not allowed', 'Allow camera access in Settings, or pick a photo from your gallery.');
-          return;
-        }
-        // The camera app needs lots of memory. Free the tutor model first so Android doesn't
-        // close Ofunca in the background; if it still does, the photo is picked up on restart.
-        const freed = running.current === 0 && !generating;
-        if (freed) await unloadLlm();
-        const r = await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 0.7, exif: false });
-        if (r.canceled || !r.assets?.length) {
-          if (freed) reloadLlm(device).catch(() => {});
-          return;
-        }
-        uri = r.assets[0].uri;
-      } else {
+      const perm = await Camera.requestCameraPermissionsAsync();
+      let pick: SnapResult = 'gallery';
+      if (perm.granted) {
+        pick = await new Promise<SnapResult>((resolve) => setSnapCam(() => resolve));
+        setSnapCam(null);
+      }
+      if (!pick) return;
+      if (pick === 'gallery') {
         const r = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.7 });
         if (r.canceled || !r.assets?.length) return;
         uri = r.assets[0].uri;
-      }
+      } else uri = pick.uri;
     } catch (e: any) {
       noteError(e);
-      Alert.alert('Could not open photos', String(e?.message ?? e));
+      Alert.alert('Could not open the camera', String(e?.message ?? e));
       return;
     }
     await readPhoto(uri);
@@ -631,7 +642,7 @@ function Main() {
         setBusy('Getting the tutor ready again…');
         await reloadLlm(device);
         if (!r.text.trim()) throw new Error('No text was found in this photo. Try a sharper, well-lit photo taken straight on.');
-        openEditor({ mode: 'ocr', title: 'Snapped notes ' + new Date().toLocaleDateString(), text: r.text, subject: subjects[0] ?? '', ocr: r });
+        openEditor({ mode: 'ocr', title: 'Snapped notes ' + new Date().toLocaleDateString(), text: r.text, subject: '', ocr: r });
       } finally {
         releaseOcr().catch(() => {});
         reloadLlm(device).catch(() => {});
@@ -642,6 +653,7 @@ function Main() {
   async function saveEditor() {
     if (!editor) return;
     const { title, text, mode, subject } = editor;
+    if (!subjectRoom(subject)) return;
     if (text.trim().length < 30) {
       Alert.alert('Too short', 'Add a bit more text (at least a couple of sentences).');
       return;
@@ -1039,7 +1051,7 @@ function Main() {
             <View style={s.actions}>
               <ActionBtn icon="document-text-outline" label="Import PDF / text" active={busy ? lastAction === 'import' : false} onPress={() => act('import', importFile)} />
               <ActionBtn icon="camera-outline" label="Snap notes" active={busy ? lastAction === 'snap' : false} onPress={() => act('snap', snapNotes)} />
-              <ActionBtn icon="clipboard-outline" label="Paste text" onPress={() => act('paste', async () => openEditor({ mode: 'paste', title: '', text: '', subject: subjects[0] ?? '' }))} />
+              <ActionBtn icon="clipboard-outline" label="Paste text" onPress={() => act('paste', async () => openEditor({ mode: 'paste', title: '', text: '', subject: '' }))} />
             </View>
             {!hideGuide && (
               <View style={s.card}>
@@ -1331,9 +1343,13 @@ function Main() {
                 onChangeText={(t) => setEditor((e) => (e ? { ...e, text: t } : e))}
                 placeholder="Paste or type your notes here…"
                 placeholderTextColor={C.muted}
+                maxLength={LIMITS.pasteChars}
                 multiline
                 textAlignVertical="top"
               />
+              <Text style={[s.small, { textAlign: 'right', marginTop: 6 }]}>
+                {(editor?.text.length ?? 0).toLocaleString()} / {LIMITS.pasteChars.toLocaleString()}
+              </Text>
               <Pressable style={s.btn} onPress={saveEditor}>
                 <Text style={s.btnText}>Save & index on-device</Text>
               </Pressable>
@@ -1528,32 +1544,7 @@ function Main() {
         </KeyboardAvoidingView>
       </Modal>
 
-      <Modal visible={!!snapPick} transparent animationType="fade" onRequestClose={() => snapPick?.(null)}>
-        <Pressable style={s.scrim} onPress={() => snapPick?.(null)}>
-          <Pressable style={s.sheet} onPress={() => {}}>
-            <Text style={s.h2}>Snap notes</Text>
-            <Text style={[s.small, { marginBottom: 14 }]}>Take a new photo or use one you already have.</Text>
-            <View style={{ flexDirection: 'row', gap: 12 }}>
-              {([
-                ['camera', 'camera-outline', 'Camera', 'Take a photo'],
-                ['gallery', 'images-outline', 'Gallery', 'Pick a photo'],
-              ] as const).map(([k, icon, label, sub]) => (
-                <Pressable key={k} style={s.pickTile} onPress={() => snapPick?.(k)}>
-                  <View style={s.pickIcon}>
-                    <Ionicons name={icon} size={30} color={C.primary} />
-                  </View>
-                  <Text style={[s.body, { fontWeight: '900', marginTop: 10 }]}>{label}</Text>
-                  <Text style={s.small}>{sub}</Text>
-                </Pressable>
-              ))}
-            </View>
-            <Text style={[s.small, { marginTop: 14 }]}>Tip: flat page, good light, shot straight on.</Text>
-            <Pressable style={{ alignItems: 'center', marginTop: 14 }} onPress={() => snapPick?.(null)} hitSlop={8}>
-              <Text style={[s.small, { fontWeight: '600' }]}>Cancel</Text>
-            </Pressable>
-          </Pressable>
-        </Pressable>
-      </Modal>
+      <SnapCamera visible={!!snapCam} accent={C.primary} onDone={(r) => snapCam?.(r)} />
 
       <PdfExtractor ref={pdf} />
     </SafeAreaView>
@@ -1623,8 +1614,9 @@ function SubjectSelect({ subjects, value, onChange }: { subjects: string[]; valu
       )}
       <TextInput
         style={s.field}
-        value={value}
+        value={subjects.includes(value) ? '' : value}
         onChangeText={onChange}
+        maxLength={LIMITS.subjectName}
         placeholder={subjects.length ? 'Or type a new subject' : 'e.g. Biology, Economics, Maths'}
         placeholderTextColor={C.muted}
         autoCapitalize="words"

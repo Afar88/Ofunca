@@ -16,7 +16,9 @@ Students in places with expensive or unreliable data, like much of Nigeria where
 | Feature | How |
 |---|---|
 | **Import notes** | PDF (text extracted on-device with an inlined pdf.js, no network), `.txt` / `.md`, or pasted text, filed under a subject |
-| **Snap notes** | Camera or gallery photo of a handout, textbook page or notebook. **QVAC OCR** (bundled in the APK, no extra download) reads it on-device; the text opens in an editable box with a low-confidence warning. Camera and Gallery are picked from a simple two-tile sheet. Ofunca frees the tutor model before opening the camera, and if Android still closes the app in the background, the photo is recovered and read on restart |
+| **Snap notes** | Opens Ofunca's own full-screen camera (built in with `expo-camera`, so Android never closes the app for a separate camera app and the photo can't get lost). Page-frame guides, flash, a big shutter, a Gallery shortcut, then a preview with **Retake** or **Read it**. **QVAC OCR** (bundled in the APK, no extra download) reads the photo on-device; the text opens in an editable box with a low-confidence warning. If camera access is refused, Snap goes straight to the gallery |
+| **Subjects** | Pick an existing subject from the chips or type a new one. Nothing is pre-filled: chips stay separate from the typing box, and an empty choice files notes under *General*. Subject comes above Title in the Paste/Snap editor |
+| **Size limits** | PDF up to 200 pages and 50 MB (longer PDFs keep the first 200 pages, with a notice) · `.txt`/`.md` up to 200,000 characters · pasted or snapped text up to 50,000 characters, with a live counter · one page per snap · up to 20 subjects, names up to 24 characters · whole library about 1,500 pages (3,000 passages) |
 | **Job queue** | Snap, Import and Paste always stay tappable; jobs queue one after another so the phone never runs two AI jobs at once |
 | **On-device indexing** | Notes are split into overlapping, sentence-aware passages and embedded with **EmbeddingGemma 300M** via QVAC `embed()` |
 | **Ask** | Hybrid search (cosine + keyword boost) finds the top passages; **Llama 3.2 1B Instruct** via QVAC `completion()` streams an answer citing `[1]`, `[2]` with "Where from?" source cards. A watchdog stops stalled answers and puts the question back for a retry |
@@ -74,8 +76,9 @@ The release APK requests only:
 
 - `INTERNET` for the one-time model download
 - `ACCESS_NETWORK_STATE` for the offline indicator
+- `CAMERA` for Ofunca's in-app camera in *Snap notes* (asked the first time you snap)
 
-Files and photos are opened with the Android system picker (Storage Access Framework), so the app needs **no storage, camera or media permissions**. Storage, media, camera, microphone, overlay, SMS, contacts, location and install-packages permissions are all explicitly removed in `app.json` (`blockedPermissions`). The release build is not debuggable. It is signed with APK Signature Scheme v2 + v3, with no packers and no downloaded executable code (only model weights are downloaded). R8 shrinking is enabled by QVAC's official Expo plugin; this is the standard Android Gradle tool, not an obfuscating packer.
+Files and gallery photos are opened with the Android system picker (Storage Access Framework), so the app needs **no storage or media permissions**. Storage, media, microphone, overlay, SMS, contacts, location and install-packages permissions are all explicitly removed in `app.json` (`blockedPermissions`). The release build is not debuggable. It is signed with APK Signature Scheme v2 + v3, with no packers and no downloaded executable code (only model weights are downloaded). R8 shrinking is enabled by QVAC's official Expo plugin; this is the standard Android Gradle tool, not an obfuscating packer.
 
 > Sideloaded apps still show Android's normal *"install unknown apps"* prompt, and Xiaomi/Play Protect may run a routine scan of an app they have not seen before. That is expected for any APK installed outside the Play Store.
 
@@ -110,6 +113,7 @@ Note: QVAC/llama.cpp does not run on Android emulators. Use a physical arm64 dev
 App.tsx                    UI: setup/download, Notes, Ask, Quiz, paste and OCR editor
 src/qvac.ts                QVAC: model list + mirrors, cache check, load, embed, streaming completion, file import
 src/modelDownload.ts       Resilient download: cache check, HTTPS mirror with resume, registry fallback, retries
+src/SnapCamera.tsx         in-app camera for Snap notes (frame guides, flash, retake)
 src/ocr.ts                 QVAC OCR "Snap notes" with line grouping and confidence
 src/rag.ts                 hybrid retrieval, grounded answer prompt, quiz prompts and parsing
 src/chunk.ts               sentence-aware overlapping chunker
