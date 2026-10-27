@@ -24,12 +24,12 @@ Students in places with expensive or unreliable data, like much of Nigeria where
 | **On-device indexing** | Notes are split into overlapping, sentence-aware passages and embedded with **EmbeddingGemma 300M** via QVAC `embed()` |
 | **Ask** | Hybrid search (cosine + keyword boost) finds the top passages; **Llama 3.2 1B Instruct** via QVAC `completion()` streams an answer citing `[1]`, `[2]` with "Where from?" source cards. A watchdog stops stalled answers and puts the question back for a retry |
 | **Honest "not in your notes"** | Off-topic questions are refused instead of made up |
-| **Quiz** | Objective A to D questions (5, 10, 15 or 20) from one subject or a mix, with instant right/wrong feedback, haptics and a score |
-| **Review my mistakes** | Wrong answers are saved (up to 60) and replayed in a shuffled review round; get one right and it leaves the list |
+| **Quiz** | Objective A to D questions (5, 10, 15, 20, 50 or **All**, one per usable passage) from one subject or a mix, with a **Stop** button while it writes, with instant right/wrong feedback, haptics and a score |
+| **Review my mistakes** | Wrong answers are saved (no cap; each question once) and all of them are replayed in a shuffled review round; get one right and it leaves the list |
 | **History** | Ask and Quiz history survive app restarts |
 | **Intro** | The bare Ofunca O pops in (the launch screen shows the same bare O, so there's no jump), then its purple graduation hat streaks in from the top corner like a shooting star with a sparkly tail, rolls and loops around the O, swells as it climbs and drops onto the O with a bounce, completing the logo. The letters of *Ofunca* then fall in one by one, followed by the tagline *Study. Anywhere. No connection.* The full show (about 5 seconds, holding the finished logo for a moment) plays on every launch while the app loads (since v1.0.12); tap anywhere to skip it |
 | **Menu** | Left drawer (two-line button, top left) opens as a short, clean list: **Study**, **Look & speed**, **My data**, **About** and **Report a problem**. Each section stays folded until tapped; tap it again to fold it, or it folds by itself when you open another section or close the menu. Look & speed holds theme (Auto, Light, Dark) and AI speed (CPU, GPU) as full-width buttons. About holds **About Ofunca** (ⓘ: what the app does plus the developer card and links), Privacy & offline, Built with and Check for updates. Report a problem opens the SMS report sheet straight away |
-| **Report a problem** | Users type the issue and send it by **SMS, so no internet data is needed**, or by WhatsApp or email when online. App version, Android version and the app's last error are added automatically; 300-character cap keeps it to about two SMS |
+| **Report a problem** | Users type the issue and send it by **SMS, so no internet data is needed**, or by WhatsApp or email when online. App version, Android version and the app's last error are added automatically. No length limit since v1.0.12; a long report goes out as several SMS |
 | **Status dot** | The header shows "On-device AI" (or "Offline · on-device AI") for a few seconds, then shrinks to a green dot; tap the dot to see it again, and tap the badge to tuck it away at once. Everything works offline |
 
 ## How it uses QVAC
@@ -99,6 +99,14 @@ A full pass over every tap, saved file and native call, so a real phone never cl
 - **Start-up:** a failure while opening the library or checking models shows the *Couldn't start* screen with *Try again* instead of hanging on the loading screen; *Try again* and CPU/GPU switching can't load the models twice.
 - **Camera and crop:** a failed shot or gallery pick no longer leaves an error behind, and the crop box is kept inside the photo so it can't ask for a negative or zero size.
 - **Links and deletes:** the model download links, *Remove notes*, *Delete all notes* and *Move to subject* show a message if they fail instead of failing silently.
+
+### Caps removed (v1.0.12)
+
+- **Quiz size:** 50 and **All** join 5/10/15/20. *All* writes one question per usable passage in the chosen notes. If the notes run out first (or a few questions can't be written), the quiz stops cleanly and says how many were made. Questions are written one at a time in the background, so the screen stays usable, and **Stop** in the progress bar keeps the questions already written. Saved history stores quizzes without embeddings, so big quizzes stay light.
+- **Mistakes list:** no longer trimmed to the last 60; each question is still kept only once.
+- **Review my mistakes:** replays every replayable mistake, not just 20.
+- **Report a problem:** the 300-character limit is gone (the message box scrolls; long SMS are split by the phone).
+- Kept on purpose, because they protect the 1B on-device model and keep answers fast: 2048-token context, answer/quiz token budgets, 3 passages per answer (from the top 8 matches), excerpts trimmed to 650 characters in the quiz prompt, the last 4 questions in the "don't repeat" list, up to 3 questions per message, 3 source cards per answer, 5 uncertain OCR lines previewed in the review box, and the 90-character last-error line added to reports.
 
 ## Install (Android phone, arm64, Android 10+)
 

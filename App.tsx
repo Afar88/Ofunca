@@ -129,7 +129,8 @@ type QuizCard = {
   correct?: number;
   picked?: number;
 };
-const QUIZ_SIZES = [5, 10, 15, 20];
+const QUIZ_ALL = 0; // "All": one question for every usable passage in the chosen notes
+const QUIZ_SIZES = [5, 10, 15, 20, 50, QUIZ_ALL];
 const LETTERS = ['A', 'B', 'C', 'D'];
 
 const SETTINGS_FILE = (FS.documentDirectory ?? '') + 'ofunca-settings.json';
@@ -921,7 +922,7 @@ function Main() {
     } catch {} // a buzz is a nice-to-have; it must never take the quiz down
     const key = String(q.question ?? '').toLowerCase();
     if (oi !== q.correct) {
-      setMistakes((prev) => (prev.some((m) => String(m.question ?? '').toLowerCase() === key) ? prev : [...prev, { ...q, picked: undefined, revealed: false }].slice(-60)));
+      setMistakes((prev) => (prev.some((m) => String(m.question ?? '').toLowerCase() === key) ? prev : [...prev, { ...q, picked: undefined, revealed: false }]));
     } else if (reviewing) {
       setMistakes((prev) => prev.filter((m) => String(m.question ?? '').toLowerCase() !== key)); // got it right now: mastered
     }
@@ -941,7 +942,7 @@ function Main() {
       setMistakes([]);
       return;
     }
-    const round = shuffle(usable.slice()).slice(0, 20).map((m) => {
+    const round = shuffle(usable.slice()).map((m) => {
       const opts = m.options ?? [];
       const order = shuffle(opts.map((_, i) => i));
       return { ...m, id: makeId('r'), options: order.map((i) => opts[i]), correct: order.indexOf(m.correct ?? 0), picked: undefined, revealed: false };
@@ -1009,6 +1010,13 @@ function Main() {
   }
 
   const makingQuiz = useRef(false);
+  const stopQuiz = useRef(false);
+  const [quizRunning, setQuizRunning] = useState(false);
+  const [quizNote, setQuizNote] = useState<string | null>(null);
+  function stopQuizNow() {
+    stopQuiz.current = true;
+    stopGenerating(); // ends the question being written right now
+  }
   async function makeQuiz() {
     if (makingQuiz.current) return; // a double tap must not write two quizzes into one
     makingQuiz.current = true;
@@ -1026,14 +1034,28 @@ function Main() {
     }
     setQuiz([]);
     setReviewing(false);
+    setQuizNote(null);
+    stopQuiz.current = false;
     await guarded('Writing quiz…', async () => {
-      const excerpts = quizExcerpts(pool, quizSize, scopeValid === AUTO ? (c) => subjectByDoc[c.docId] ?? '' : undefined).filter((c) => c && typeof c.text === 'string' && c.text.trim());
+      setQuizRunning(true);
+      const groupOf = scopeValid === AUTO ? (c: StoredChunk) => subjectByDoc[c.docId] ?? '' : undefined;
+      const usable = (c: StoredChunk) => !!c && typeof c.text === 'string' && !!c.text.trim();
+      let excerpts: StoredChunk[];
+      if (quizSize === QUIZ_ALL) {
+        // Every distinct passage the quiz picker would use, once each.
+        const seen = new Set<string>();
+        const groups = groupOf ? new Set(pool.map(groupOf)).size : 1; // round-robin needs this many turns to reach every passage
+        excerpts = quizExcerpts(pool, pool.length * Math.max(1, groups), groupOf).filter((c) => usable(c) && !seen.has(c.id) && !!seen.add(c.id));
+      } else {
+        excerpts = quizExcerpts(pool, quizSize, groupOf).filter(usable);
+      }
       if (!excerpts.length) throw new Error('Your notes don’t have enough text for a quiz yet. Add a bit more and try again.');
+      const target = quizSize === QUIZ_ALL ? excerpts.length : quizSize;
       const asked: string[] = [];
       let made = 0;
-      for (let i = 0; i < excerpts.length + 4 && made < quizSize; i++) {
+      for (let i = 0; i < excerpts.length + 4 && made < target && !stopQuiz.current; i++) {
         const ex = excerpts[i % excerpts.length];
-        setBusy(`Writing question ${made + 1} of ${quizSize}…`);
+        setBusy(`Writing question ${made + 1} of ${target}…`);
         let raw = '';
         try {
           raw = await generate(buildMcqPrompt(ex.text, asked), () => {}, {
@@ -1045,6 +1067,7 @@ function Main() {
         } catch {
           continue; // one stuck question never stops the whole quiz
         }
+        if (stopQuiz.current) break; // Stop tapped: keep the questions already written
         const q = parseMcq(raw);
         if (!q || asked.some((x) => x.toLowerCase() === q.question.toLowerCase())) continue;
         asked.push(q.question);
@@ -1054,8 +1077,13 @@ function Main() {
           { id: makeId('z'), ...q, source: ex, docName: docNames[ex.docId] ?? 'Notes', revealed: false },
         ]);
       }
-      if (!made) throw new Error('The tutor couldn’t write questions from these notes this time. Please tap Quiz me again.');
+      if (!made && stopQuiz.current) setQuizNote('Quiz stopped.');
+      if (made && made < target) {
+        setQuizNote(stopQuiz.current ? `Stopped: ${made} of ${target} questions written.` : `${made} of ${target} questions: that’s all these notes could support this time.`);
+      }
+      if (!made && !stopQuiz.current) throw new Error('The tutor couldn’t write questions from these notes this time. Please tap Quiz me again.');
     }, 'llm');
+    setQuizRunning(false);
   }
 
   // ---------- Render ----------
@@ -1215,7 +1243,7 @@ function Main() {
                 {[
                   ['1', 'Add your notes', 'Import a PDF, snap a photo of your notebook or handout, or paste text. Put each one under a subject.'],
                   ['2', 'Ask anything', 'Type your question, even two or three at once. Answers come only from your notes, with “Where from?” showing the exact part.'],
-                  ['3', 'Quiz yourself', 'Pick a subject or mix them all, choose 5 to 20 questions, tap A to D and see right or wrong with your score.'],
+                  ['3', 'Quiz yourself', 'Pick a subject or mix them all, choose 5, 10, 15, 20, 50 or All questions, tap A to D and see right or wrong with your score.'],
                 ].map(([n, t, d]) => (
                   <View key={n} style={{ flexDirection: 'row', gap: 12, marginTop: 14 }}>
                     <View style={s.stepNum}>
@@ -1338,7 +1366,7 @@ function Main() {
                 <SubjectChips subjects={subjects} value={scopeValid} onChange={setScope} autoLabel="Mix all" inline />
               </>
             )}
-            <View style={{ flexDirection: 'row', justifyContent: 'center', gap: 8, marginBottom: 10, alignItems: 'center' }}>
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', gap: 8, marginBottom: 10, alignItems: 'center' }}>
               <Text style={s.small}>Questions:</Text>
               {QUIZ_SIZES.map((n) => (
                 <Pressable
@@ -1347,7 +1375,7 @@ function Main() {
                   disabled={!!busy}
                   style={[s.sizeChip, quizSize === n && s.sizeChipOn]}
                 >
-                  <Text style={[s.sizeChipText, quizSize === n && s.sizeChipTextOn]}>{n}</Text>
+                  <Text style={[s.sizeChipText, quizSize === n && s.sizeChipTextOn]}>{n === QUIZ_ALL ? 'All' : n}</Text>
                 </Pressable>
               ))}
             </View>
@@ -1357,6 +1385,7 @@ function Main() {
                 {quiz.every((q) => !q.options || q.picked !== undefined) ? ` 🎉 Done!` : ''}
               </Text>
             )}
+            {!!quizNote && !busy && <Text style={[s.small, { textAlign: 'center', marginBottom: 4 }]}>{quizNote}</Text>}
             <Pressable style={[s.btn, (!!busy || !chunks.length) && s.btnDisabled]} disabled={!!busy || !chunks.length} onPress={makeQuiz}>
               <Text style={s.btnText}>{quiz.length ? 'New quiz' : 'Quiz me'}</Text>
             </Pressable>
@@ -1436,6 +1465,11 @@ function Main() {
         <View style={s.busy}>
           <ActivityIndicator color="#fff" />
           <Text style={s.busyText}>{busy}{queued > 0 ? `  ·  ${queued} more lined up` : ''}</Text>
+          {quizRunning && (
+            <Pressable onPress={stopQuizNow} hitSlop={10} accessibilityLabel="Stop writing the quiz">
+              <Text style={{ color: '#fff', fontWeight: '900' }}>Stop</Text>
+            </Pressable>
+          )}
         </View>
       )}
 
@@ -1672,7 +1706,7 @@ function Main() {
           <Pressable style={s.scrim} onPress={() => setReport(null)}>
             <Pressable style={s.sheet} onPress={() => {}}>
               <Text style={s.h2}>Report a problem</Text>
-              <Text style={[s.small, { marginBottom: 10 }]}>Say what happened and what you were doing. SMS works without internet data (normal SMS rate).</Text>
+              <Text style={[s.small, { marginBottom: 10 }]}>Say what happened and what you were doing. SMS works without internet data (normal SMS rate; a long report is sent as several SMS).</Text>
               <TextInput
                 style={[s.input, { minHeight: 110, maxHeight: 200, borderRadius: 14, textAlignVertical: 'top', flex: 0 }]}
                 multiline
@@ -1681,9 +1715,8 @@ function Main() {
                 placeholderTextColor={C.muted}
                 value={report ?? ''}
                 onChangeText={setReport}
-                maxLength={300}
               />
-              <Text style={[s.small, { textAlign: 'right', marginTop: 4 }]}>{(report ?? '').length}/300{lastErrorLine() ? ' · last error attached' : ''}</Text>
+              <Text style={[s.small, { textAlign: 'right', marginTop: 4 }]}>{(report ?? '').length} characters{lastErrorLine() ? ' · last error attached' : ''}</Text>
               <Pressable style={[s.btn, !report?.trim() && { opacity: 0.5 }]} disabled={!report?.trim()} onPress={() => sendReport('sms')}>
                 <Text style={s.btnText}>Send by SMS</Text>
               </Pressable>
