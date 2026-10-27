@@ -62,7 +62,10 @@ import {
   buildAnswerPrompt,
   buildOneQuestionPrompt,
   parseOneQuestion,
-  pickQuizExcerpts,
+  buildMcqPrompt,
+  parseMcq,
+  MCQ_SCHEMA,
+  quizExcerpts,
   search,
   type Hit, splitQuestions, bestDocHits } from './src/rag';
 import { SAMPLE_NOTES, SAMPLE_TITLE } from './src/sample';
@@ -72,7 +75,19 @@ type Phase = 'checking' | 'needDownload' | 'downloading' | 'loading' | 'ready' |
 type QA = { id: string; question: string; answer: string; hits: Hit[]; done: boolean; ms?: number; subject?: string; replyTo?: { id: string; question: string } };
 type AiState = 'off' | 'loading' | 'embed' | 'ready';
 const AUTO = '__auto__';
-type QuizCard = { id: string; question: string; answer: string; source: StoredChunk; docName: string; revealed: boolean };
+type QuizCard = {
+  id: string;
+  question: string;
+  answer: string;
+  source: StoredChunk;
+  docName: string;
+  revealed: boolean;
+  options?: string[];
+  correct?: number;
+  picked?: number;
+};
+const QUIZ_SIZES = [5, 10, 15, 20];
+const LETTERS = ['A', 'B', 'C', 'D'];
 
 const SETTINGS_FILE = (FS.documentDirectory ?? '') + 'ofunca-settings.json';
 type ThemePref = 'system' | 'light' | 'dark';
@@ -498,6 +513,7 @@ function Main() {
 
   // ---------- Quiz ----------
   const [quiz, setQuiz] = useState<QuizCard[]>([]);
+  const [quizSize, setQuizSize] = useState(10);
 
   // ---------- Saved history: answers and quizzes are still there after closing the app ----------
   const historyLoaded = useRef(false);
@@ -542,21 +558,24 @@ function Main() {
     }
     setQuiz([]);
     await guarded('Writing quiz…', async () => {
-      const excerpts = pickQuizExcerpts(pool, 4);
+      const excerpts = quizExcerpts(pool, quizSize);
       const asked: string[] = [];
-      for (let i = 0; i < excerpts.length; i++) {
-        setBusy(`Writing question ${i + 1} of ${excerpts.length}…`);
-        const raw = await generate(buildOneQuestionPrompt(excerpts[i].text, asked), () => {}, {
-          maxTokens: 120,
-          temp: 0.5,
-          jsonSchema: ONE_QUESTION_SCHEMA,
+      let made = 0;
+      for (let i = 0; i < excerpts.length + 4 && made < quizSize; i++) {
+        const ex = excerpts[i % excerpts.length];
+        setBusy(`Writing question ${made + 1} of ${quizSize}…`);
+        const raw = await generate(buildMcqPrompt(ex.text, asked), () => {}, {
+          maxTokens: 160,
+          temp: 0.6,
+          jsonSchema: MCQ_SCHEMA,
         });
-        const q = parseOneQuestion(raw);
-        if (!q) continue;
+        const q = parseMcq(raw);
+        if (!q || asked.some((x) => x.toLowerCase() === q.question.toLowerCase())) continue;
         asked.push(q.question);
+        made++;
         setQuiz((prev) => [
           ...prev,
-          { id: makeId('z'), ...q, source: excerpts[i], docName: docNames[excerpts[i].docId] ?? 'Notes', revealed: false },
+          { id: makeId('z'), ...q, source: ex, docName: docNames[ex.docId] ?? 'Notes', revealed: false },
         ]);
       }
     }, 'llm');
@@ -854,6 +873,25 @@ function Main() {
         {tab === 'quiz' && (
           <ScrollView contentContainerStyle={s.pad}>
             {subjects.length > 1 && <SubjectChips subjects={subjects} value={scopeValid} onChange={setScope} autoLabel="All" inline />}
+            <View style={{ flexDirection: 'row', justifyContent: 'center', gap: 8, marginBottom: 10, alignItems: 'center' }}>
+              <Text style={s.small}>Questions:</Text>
+              {QUIZ_SIZES.map((n) => (
+                <Pressable
+                  key={n}
+                  onPress={() => setQuizSize(n)}
+                  disabled={!!busy}
+                  style={[s.sizeChip, quizSize === n && s.sizeChipOn]}
+                >
+                  <Text style={[s.sizeChipText, quizSize === n && s.sizeChipTextOn]}>{n}</Text>
+                </Pressable>
+              ))}
+            </View>
+            {quiz.some((q) => q.picked !== undefined) && (
+              <Text style={s.score}>
+                Score: {quiz.filter((q) => q.picked !== undefined && q.picked === q.correct).length} / {quiz.filter((q) => q.picked !== undefined).length}
+                {quiz.every((q) => !q.options || q.picked !== undefined) ? ` 🎉 Done!` : ''}
+              </Text>
+            )}
             <Pressable style={[s.btn, (!!busy || !chunks.length) && s.btnDisabled]} disabled={!!busy || !chunks.length} onPress={makeQuiz}>
               <Text style={s.btnText}>{quiz.length ? '🔄 New quiz' : '🧠 Quiz me'}</Text>
             </Pressable>
@@ -864,14 +902,44 @@ function Main() {
             )}
             {!quiz.length && !busy && (
               <Text style={[s.small, { textAlign: 'center', marginTop: 12 }]}>
-                {chunks.length ? `Generates 4 questions from ${scopeValid === AUTO ? 'all your notes' : scopeValid}.` : 'Add notes first.'}
+                {chunks.length ? `Pick an answer A to D for each question from ${scopeValid === AUTO ? 'all your notes' : scopeValid}.` : 'Add notes first.'}
               </Text>
             )}
             {quiz.map((q, i) => (
               <View key={q.id} style={s.card}>
                 <Text style={s.qNum}>Question {i + 1}</Text>
                 <Text style={s.qText}>{q.question}</Text>
-                {q.revealed ? (
+                {q.options ? (
+                  <>
+                    {q.options.map((opt, oi) => {
+                      const done = q.picked !== undefined;
+                      const isRight = oi === q.correct;
+                      const isPicked = oi === q.picked;
+                      return (
+                        <Pressable
+                          key={oi}
+                          disabled={done}
+                          onPress={() => setQuiz((prev) => prev.map((x) => (x.id === q.id ? { ...x, picked: oi, revealed: true } : x)))}
+                          style={[s.opt, done && isRight && s.optRight, done && isPicked && !isRight && s.optWrong]}
+                        >
+                          <Text style={s.optText}>
+                            {LETTERS[oi]}. {opt}
+                            {done && isRight ? '  ✅' : ''}
+                            {done && isPicked && !isRight ? '  ❌' : ''}
+                          </Text>
+                        </Pressable>
+                      );
+                    })}
+                    {q.picked !== undefined && (
+                      <>
+                        <Text style={[s.answerLabel, { color: q.picked === q.correct ? C.okText : C.danger }]}>
+                          {q.picked === q.correct ? 'Correct! 🎉' : `Wrong. The answer is ${LETTERS[q.correct ?? 0]}. ${q.answer}`}
+                        </Text>
+                        <SourceCard n={i + 1} docName={q.docName} page={q.source.page} text={q.source.text} />
+                      </>
+                    )}
+                  </>
+                ) : q.revealed ? (
                   <>
                     <Text style={s.answerLabel}>Answer</Text>
                     <Text style={s.body}>{q.answer}</Text>
@@ -1231,6 +1299,15 @@ const makeStyles = () => StyleSheet.create({
   btn: { backgroundColor: C.pink, borderRadius: 22, paddingVertical: 15, alignItems: 'center', marginTop: 16, borderBottomWidth: 5, borderBottomColor: C.pinkDeep },
   btnText: { color: '#fff', fontWeight: '900', fontSize: 17, letterSpacing: 0.3 },
   btnDisabled: { opacity: 0.45 },
+  sizeChip: { minWidth: 40, paddingVertical: 6, paddingHorizontal: 10, borderRadius: 16, borderWidth: 2, borderColor: C.primary, alignItems: 'center', backgroundColor: C.card },
+  sizeChipOn: { backgroundColor: C.primary },
+  sizeChipText: { color: C.primary, fontWeight: '800' },
+  sizeChipTextOn: { color: '#fff' },
+  score: { textAlign: 'center', fontSize: 18, fontWeight: '900', color: C.primaryDeep, marginBottom: 8 },
+  opt: { borderWidth: 2, borderColor: C.border, borderBottomWidth: 4, borderRadius: 16, paddingVertical: 11, paddingHorizontal: 14, marginTop: 8, backgroundColor: C.card },
+  optRight: { backgroundColor: C.ok, borderColor: C.okText },
+  optWrong: { backgroundColor: C.warnBg, borderColor: C.danger },
+  optText: { color: C.text, fontSize: 15, fontWeight: '600' },
   btnGhost: { borderWidth: 2, borderColor: C.primary, borderBottomWidth: 4, borderRadius: 22, paddingVertical: 11, alignItems: 'center', marginTop: 12, backgroundColor: C.card },
   btnGhostText: { color: C.primary, fontWeight: '900', fontSize: 15 },
   header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 14, backgroundColor: C.header, borderBottomLeftRadius: 22, borderBottomRightRadius: 22 },

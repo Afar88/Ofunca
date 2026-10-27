@@ -241,3 +241,66 @@ export function bestDocHits(hits: Hit[], max = 3): Hit[] {
   const doc = hits[0].chunk.docId;
   return focusHits(hits.filter((h) => h.chunk.docId === doc), max);
 }
+
+// Multiple choice: the model writes the right answer plus 3 wrong ones, the app shuffles and marks taps.
+export const MCQ_SCHEMA = {
+  type: 'object',
+  properties: {
+    question: { type: 'string' },
+    answer: { type: 'string' },
+    wrong: { type: 'array', minItems: 3, maxItems: 3, items: { type: 'string' } },
+  },
+  required: ['question', 'answer', 'wrong'],
+};
+
+export function buildMcqPrompt(excerpt: string, avoid: string[] = []) {
+  const system =
+    'You write multiple-choice revision questions for students. The question must be answerable from the note excerpt alone. ' +
+    'Give the correct answer and three wrong but believable answers. Keep every option short (a few words). Reply with JSON only.';
+  const user =
+    `Note excerpt:\n${excerpt}\n\n` +
+    (avoid.length ? `Do not repeat these questions: ${avoid.slice(-8).map((q) => `"${q}"`).join('; ')}\n\n` : '') +
+    'Write one multiple-choice question about this excerpt. Return JSON like {"question":"...","answer":"...","wrong":["...","...","..."]}';
+  return [
+    { role: 'system' as const, content: system },
+    { role: 'user' as const, content: user },
+  ];
+}
+
+export function parseMcq(raw: string): { question: string; answer: string; options: string[]; correct: number } | null {
+  const m = raw.match(/\{[\s\S]*\}/);
+  try {
+    const o = JSON.parse(m ? m[0] : raw);
+    const q = typeof o?.question === 'string' ? o.question.trim() : '';
+    const a = typeof o?.answer === 'string' ? o.answer.trim() : '';
+    if (!q || !a) return null;
+    const norm = (x: string) => x.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+    const wrong: string[] = [];
+    for (const w of Array.isArray(o.wrong) ? o.wrong : []) {
+      const t = typeof w === 'string' ? w.trim() : '';
+      if (t && norm(t) !== norm(a) && !wrong.some((x) => norm(x) === norm(t))) wrong.push(t);
+    }
+    if (wrong.length < 2) return null;
+    const options = [a, ...wrong.slice(0, 3)];
+    for (let i = options.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [options[i], options[j]] = [options[j], options[i]];
+    }
+    return { question: q, answer: a, options, correct: options.indexOf(a) };
+  } catch {
+    return null;
+  }
+}
+
+/** n excerpts for an n-question quiz; repeats excerpts (shuffled) when the notes are short. */
+export function quizExcerpts(chunks: StoredChunk[], n: number): StoredChunk[] {
+  const rich = chunks.filter((c) => c.text.length > 200);
+  const pool = (rich.length ? rich : chunks).slice();
+  for (let i = pool.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [pool[i], pool[j]] = [pool[j], pool[i]];
+  }
+  const out: StoredChunk[] = [];
+  for (let i = 0; i < n && pool.length; i++) out.push(pool[i % pool.length]);
+  return out;
+}
