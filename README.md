@@ -78,7 +78,7 @@ Files and photos are opened with the Android system picker (Storage Access Frame
 
 1. Download `Ofunca-v1.0.6.apk` to the phone.
 2. Open it. If asked, allow your browser or file manager to *install unknown apps*, then tap **Install**.
-3. Open **Ofunca**. On **Wi‑Fi**, tap **Download AI models** (≈1.15 GB, one time).
+3. Open **Ofunca**. On **Wi‑Fi**, tap **Download AI models** (≈1.05 GB, one time; the photo reader is built into the app).
 4. When you see **"All set!"** you can switch on airplane mode. Everything keeps working.
 
 ## Build from source

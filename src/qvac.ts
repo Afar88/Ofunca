@@ -74,7 +74,7 @@ export const MODEL_SPECS: ModelSpec[] = [
 export const MODEL_GROUPS = [
   { id: 'embed', label: 'EmbeddingGemma 300M (Q4_0)', role: 'Understands your notes', keys: ['embed'] as ModelKey[] },
   { id: 'llm', label: 'Llama 3.2 1B Instruct (Q4_0)', role: 'Writes answers & quizzes', keys: ['llm'] as ModelKey[] },
-  { id: 'ocr', label: 'QVAC OCR (Latin + text detector)', role: 'Reads photos of notes (optional)', keys: ['ocrRec', 'ocrDet'] as ModelKey[] },
+  { id: 'ocr', label: 'QVAC OCR (Latin + text detector)', role: 'Reads photos of notes (built into the app)', keys: ['ocrRec', 'ocrDet'] as ModelKey[] },
 ];
 
 export const MODELS = MODEL_GROUPS.slice(0, 2).map((g) => ({ ...g, approxMB: Math.round(MODEL_SPECS.find((m) => m.key === g.keys[0])!.expectedSize / 1e6) }));
@@ -210,13 +210,19 @@ export async function importPickedModel(
         .join(' or ')}.`,
     );
   }
+  await installFromUri(m, picked.uri, onStatus);
+  return m;
+}
+
+/** Copies a model file into the QVAC cache path and has QVAC check it against the catalog SHA-256. */
+async function installFromUri(m: ModelSpec, uri: string, onStatus: (s: string) => void) {
   const info = await deps.getModelInfo(m.name);
-  if (info.isCached) return m;
+  if (info.isCached) return;
   if (!info.cachePath) throw new Error('QVAC cache path unavailable');
   const tmp = info.cachePath + '.import';
   onStatus(`Copying ${m.fileName}…`);
   await FS.deleteAsync(toUri(tmp), { idempotent: true });
-  await FS.copyAsync({ from: picked.uri, to: toUri(tmp) });
+  await FS.copyAsync({ from: uri, to: toUri(tmp) });
   const size = await deps.fileSize(tmp);
   if (size !== m.expectedSize) {
     await FS.deleteAsync(toUri(tmp), { idempotent: true });
@@ -244,7 +250,6 @@ export async function importPickedModel(
   if (mismatch || !(await deps.getModelInfo(m.name)).isCached) {
     throw new Error(`${m.fileName} did not match the expected checksum and was removed. Download it again.`);
   }
-  return m;
 }
 
 // Phone CPUs mix fast and slow cores. 4 threads keeps llama.cpp on the fast cores, which is
@@ -397,4 +402,26 @@ export async function generate(
   }
   onToken(acc);
   return acc.trim();
+}
+
+/**
+ * The OCR models (recogniser + CRAFT detector) ship inside the APK, so Snap notes works with no download,
+ * even when the other models were imported from Chrome. On first use they are copied from the app
+ * into the QVAC cache and checksum-verified. No network is used.
+ */
+export async function installBundledOcr(onStatus: (s: string) => void = () => {}) {
+  const { Asset } = require('expo-asset');
+  const files: [ModelKey, any][] = [
+    ['ocrRec', require('../assets/models/latin_g2.gguf')],
+    ['ocrDet', require('../assets/models/craft_mlt_25k.gguf')],
+  ];
+  for (const [key, mod] of files) {
+    const m = specOf(key);
+    if ((await deps.getModelInfo(m.name)).isCached) continue;
+    onStatus('Setting up photo reader…');
+    const a = Asset.fromModule(mod);
+    await a.downloadAsync();
+    if (!a.localUri) throw new Error('Bundled OCR model missing');
+    await installFromUri(m, a.localUri, onStatus);
+  }
 }

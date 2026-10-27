@@ -1,10 +1,9 @@
 // "Snap notes": on-device OCR of a photographed page via QVAC's OCR engine.
-// The detector + Latin recogniser models are downloaded with the other models
+// The detector + Latin recogniser models ship inside the app (no download)
 // and run locally, so this works in airplane mode too.
 import { loadModel, ocr, unloadModel, OCR_LATIN } from '@qvac/sdk';
 import * as ImageManipulator from 'expo-image-manipulator';
-import { downloadModels, modelsCached } from './qvac';
-import type { DlState } from './modelDownload';
+import { modelsCached } from './qvac';
 
 export const OCR_MODEL = OCR_LATIN;
 export const OCR_APPROX_MB = 98; // recogniser (~15 MB) + CRAFT text detector (~83 MB)
@@ -15,15 +14,6 @@ let ocrId: string | null = null;
 export async function ocrCached() {
   const c = await modelsCached();
   return c.ocrRec && c.ocrDet;
-}
-
-/**
- * Downloads the recogniser AND the CRAFT detector. The detector used to be fetched lazily on the first
- * OCR load, which needed internet; now both are cached up front so Snap notes works in airplane mode.
- */
-export async function downloadOcr(onState: (key: 'ocrRec' | 'ocrDet', s: DlState) => void) {
-  const r = await downloadModels(['ocrRec', 'ocrDet'], onState as any);
-  if (r.failedOptional.length) throw new Error('Could not download the OCR model. Check your connection and try again.');
 }
 
 async function ensureOcr() {

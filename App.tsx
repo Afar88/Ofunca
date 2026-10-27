@@ -49,7 +49,9 @@ import {
   type Device,
 } from './src/qvac';
 import { friendlyError, type DlState, type ModelKey } from './src/modelDownload';
-import { OCR_APPROX_MB, downloadOcr, ocrCached, recognise, type OcrResult } from './src/ocr';
+import { ocrCached, recognise, type OcrResult } from './src/ocr';
+import { installBundledOcr } from './src/qvac';
+import { checkForUpdate } from './src/update';
 import {
   NOT_FOUND,
   cleanAnswer,
@@ -194,6 +196,8 @@ function Main() {
         // Fast start: models were set up before, so open the app now and load them behind the scenes.
         const ok = await bootModels(dev);
         if (ok) {
+          installBundledOcr().catch(() => {});
+          setTimeout(() => checkForUpdate(), 4000);
           modelsCached().then((c) => setOcrMissing(!(c.ocrRec && c.ocrDet))).catch(() => {});
           return;
         }
@@ -214,10 +218,11 @@ function Main() {
     activateKeepAwakeAsync('model-download').catch(() => {});
     try {
       // Finished models are skipped; a partial download continues from the bytes already saved.
-      const r = await downloadModels(['embed', 'llm', 'ocrRec', 'ocrDet'], setKey);
+      const r = await downloadModels(['embed', 'llm'], setKey);
       setOcrMissing(r.failedOptional.length > 0);
       setJustDownloaded(true);
       await bootModels(device);
+      installBundledOcr().catch(() => {});
     } catch (e: any) {
       setPhase('needDownload');
       await refreshSaved().catch(() => {});
@@ -243,6 +248,7 @@ function Main() {
       if (c.embed && c.llm) {
         setJustDownloaded(true);
         await bootModels(device);
+        installBundledOcr().catch(() => {});
       } else {
         Alert.alert('Model imported', `${m.fileName} is ready. ${!c.embed || !c.llm ? 'Import or download the other model to finish setup.' : ''}`);
       }
@@ -344,25 +350,13 @@ function Main() {
 
   async function snapNotes() {
     // Uses the system file/gallery picker (no camera or storage permission needed).
-    if (ocrMissing && !(await ocrCached())) {
-      if (online === false) {
-        Alert.alert('OCR model not downloaded', `Snap notes needs a one-time ${OCR_APPROX_MB} MB download. Connect to the internet once, then try again.`);
-        return;
-      }
+    if (!(await ocrCached())) {
+      // The photo reader ships inside the app: copy it into place once (no internet needed).
       let ok = false;
-      await guarded('Downloading OCR model…', async () => {
-        activateKeepAwakeAsync('ocr-download').catch(() => {});
-        try {
-          await downloadOcr((k, st) => {
-            setKey(k, st);
-            const mb = `${(st.downloaded / 1e6).toFixed(0)} / ${(st.total / 1e6).toFixed(0)} MB`;
-            setBusy(st.status === 'waiting' ? `OCR download: ${st.note ?? 'retrying…'}` : `Downloading OCR model (${k === 'ocrRec' ? '1' : '2'}/2)… ${mb}`);
-          });
-          ok = true;
-          setOcrMissing(false);
-        } finally {
-          deactivateKeepAwake('ocr-download').catch(() => {});
-        }
+      await guarded('Setting up photo reader…', async () => {
+        await installBundledOcr(setBusy);
+        ok = true;
+        setOcrMissing(false);
       });
       if (!ok) return;
     }
@@ -582,10 +576,10 @@ function Main() {
             <View style={s.card}>
               <Text style={s.h2}>One-time setup</Text>
               <Text style={s.body}>
-                Download the on-device AI models once (about {Math.round((MODELS.reduce((a, m) => a + m.approxMB, 0) + OCR_APPROX_MB) / 10) / 100} GB, Wi‑Fi
+                Download the on-device AI models once (about {Math.round(MODELS.reduce((a, m) => a + m.approxMB, 0) / 10) / 100} GB, Wi‑Fi
                 recommended). After that the app works with no internet, even in airplane mode.
               </Text>
-              {MODEL_GROUPS.map((g) => {
+              {MODEL_GROUPS.filter((g) => g.id !== 'ocr').map((g) => {
                 const v = groupView(g.keys, dl);
                 return (
                   <View key={g.id} style={s.modelRow}>
@@ -690,11 +684,6 @@ function Main() {
         )}
       </View>
 
-      {ocrMissing && !justDownloaded && tab === 'notes' && (
-        <Text style={[s.small, { paddingHorizontal: 16, paddingTop: 8 }]}>
-          Photo reading (OCR) isn't downloaded yet. It downloads when you first tap "Snap notes".
-        </Text>
-      )}
       {justDownloaded && (
         <Pressable style={s.banner} onPress={() => setJustDownloaded(false)}>
           <Text style={s.bannerText}>✅ All set! Models are on your phone. You can switch on airplane mode now. (tap to dismiss)</Text>

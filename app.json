@@ -2,7 +2,7 @@
   "expo": {
     "name": "Ofunca",
     "slug": "ofunca",
-    "version": "1.0.6",
+    "version": "1.0.7",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -10,7 +10,7 @@
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#4338CA"
+      "backgroundColor": "#FFE9A8"
     },
     "ios": {
       "supportsTablet": true,
@@ -18,10 +18,10 @@
     },
     "android": {
       "package": "com.afar88.ofunca",
-      "versionCode": 7,
+      "versionCode": 8,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#4338CA"
+        "backgroundColor": "#FFE9A8"
       },
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
