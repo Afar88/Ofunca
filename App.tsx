@@ -995,7 +995,7 @@ function Main() {
 function BrandMark() {
   return (
     <View style={s.brand}>
-      <Text style={s.brandText}>S</Text>
+      <Text style={s.brandText}>O</Text>
       <View style={s.brandDot} />
     </View>
   );
