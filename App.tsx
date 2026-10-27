@@ -5,6 +5,7 @@ import {
   FlatList,
   KeyboardAvoidingView,
   Linking,
+  Image,
   Modal,
   Platform,
   Pressable,
@@ -53,6 +54,7 @@ import { friendlyError, type DlState, type ModelKey } from './src/modelDownload'
 import { ocrCached, recognise, releaseOcr, type OcrResult } from './src/ocr';
 import { installBundledOcr, unloadLlm, reloadLlm } from './src/qvac';
 import { checkForUpdate } from './src/update';
+import { Intro } from './src/Intro';
 import {
   NOT_FOUND,
   cleanAnswer,
@@ -106,9 +108,11 @@ async function saveSettings(patch: Settings) {
 }
 
 export default function App() {
+  const [intro, setIntro] = useState(true);
   return (
     <SafeAreaProvider>
       <Main />
+      {intro && <Intro onDone={() => setIntro(false)} />}
     </SafeAreaProvider>
   );
 }
@@ -1188,9 +1192,8 @@ function Main() {
 
 function BrandMark() {
   return (
-    <View style={s.brand}>
-      <Text style={s.brandText}>O</Text>
-      <View style={s.brandDot} />
+    <View style={{ alignItems: 'center' }}>
+      <Image source={require('./assets/splash-icon.png')} style={{ width: 120, height: 120 }} resizeMode="contain" />
     </View>
   );
 }
