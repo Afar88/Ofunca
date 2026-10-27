@@ -719,11 +719,23 @@ function Main() {
             </View>
             {docs.length === 0 ? (
               <View style={s.card}>
-                <Text style={s.h2}>No notes yet</Text>
-                <Text style={s.body}>Import a PDF or text file, snap a photo of a handout, or paste text. Everything is processed and stored only on this phone.</Text>
-                <Pressable style={s.btnGhost} onPress={addSample} disabled={!!busy}>
-                  <Text style={s.btnGhostText}>Try sample biology notes</Text>
-                </Pressable>
+                <Text style={s.h2}>How Ofunca works</Text>
+                {[
+                  ['1', '📚 Add your notes', 'Import a PDF, snap a photo of your notebook or handout, or paste text. Put each one under a subject.'],
+                  ['2', '💬 Ask anything', 'Type your question, even two or three at once. Answers come only from your notes, with “Where from?” showing the exact part.'],
+                  ['3', '🧠 Quiz yourself', 'Pick a subject or mix them all, choose 5 to 20 questions, tap A to D and see ✅ or ❌ with your score.'],
+                ].map(([n, t, d]) => (
+                  <View key={n} style={{ flexDirection: 'row', gap: 12, marginTop: 14 }}>
+                    <View style={s.stepNum}>
+                      <Text style={s.stepNumText}>{n}</Text>
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={[s.body, { fontWeight: '900' }]}>{t}</Text>
+                      <Text style={s.small}>{d}</Text>
+                    </View>
+                  </View>
+                ))}
+                <Text style={[s.small, { marginTop: 14 }]}>✈️ Everything runs and stays on this phone. No internet needed.</Text>
               </View>
             ) : (
               subjects.map((sub) => (
@@ -1313,6 +1325,8 @@ const makeStyles = () => StyleSheet.create({
   optRight: { backgroundColor: C.ok, borderColor: C.okText },
   optWrong: { backgroundColor: C.warnBg, borderColor: C.danger },
   optText: { color: C.text, fontSize: 15, fontWeight: '600' },
+  stepNum: { width: 32, height: 32, borderRadius: 16, backgroundColor: C.pink, alignItems: 'center', justifyContent: 'center', borderBottomWidth: 3, borderBottomColor: C.pinkDeep },
+  stepNumText: { color: '#fff', fontWeight: '900', fontSize: 16 },
   btnGhost: { borderWidth: 2, borderColor: C.primary, borderBottomWidth: 4, borderRadius: 22, paddingVertical: 11, alignItems: 'center', marginTop: 12, backgroundColor: C.card },
   btnGhostText: { color: C.primary, fontWeight: '900', fontSize: 15 },
   header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 14, backgroundColor: C.header, borderBottomLeftRadius: 22, borderBottomRightRadius: 22 },
