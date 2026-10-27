@@ -924,7 +924,7 @@ function Main() {
         <ScrollView contentContainerStyle={s.setup}>
           <BrandMark />
           <Text style={s.title}>Ofunca</Text>
-          <Text style={s.tagline}>Your notes. Your tutor. No signal needed.</Text>
+          <Text style={s.tagline}>Study smart. Anywhere. No data needed.</Text>
           <Text style={s.sub}>Ask your class notes anything and get answers straight from them, with the AI running entirely on your phone.</Text>
           {phase === 'needDownload' || phase === 'downloading' ? (
             <View style={s.card}>

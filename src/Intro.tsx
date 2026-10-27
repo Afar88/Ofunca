@@ -1,20 +1,26 @@
-// Candy pop intro: the Ofunca O bursts out, does a little wiggle dance, sparkles fly, then the name drops in.
-// Plays over whatever is loading underneath (about 1.8 s), so it never adds waiting. Tap to skip.
+// Intro: the Ofunca O pops in, then a small heart streaks in from the top corner like a shooting
+// star, loops around the O, swells as it climbs, and drops onto the O with a bounce. Then the
+// letters of "Ofunca" fall in one by one and the tagline fades up. Plays over loading. Tap to skip.
 import React, { useEffect, useRef } from 'react';
-import { Animated, Easing, Image, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Animated, Dimensions, Easing, Image, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 
-const SPARKS = ['✨', '⭐', '💖', '✨', '🍬', '⭐', '✨', '💜'];
+const PINK = '#FF3D8B';
+const TRAIL = 5;
+const LETTERS = 'Ofunca'.split('');
+export const TAGLINE = 'Study smart. Anywhere. No data needed.';
 
 export function Intro({ onDone }: { onDone: () => void }) {
+  const { width: W, height: H } = Dimensions.get('window');
   // Starts at full size so it carries straight on from the launch screen's O (no blank gap).
   const scale = useRef(new Animated.Value(1)).current;
-  const spin = useRef(new Animated.Value(0)).current;
-  const burst = useRef(new Animated.Value(0)).current;
-  const title = useRef(new Animated.Value(0)).current;
+  const flight = useRef(new Animated.Value(0)).current;
+  const trail = useRef(Array.from({ length: TRAIL }, () => new Animated.Value(0))).current;
+  const land = useRef(new Animated.Value(0)).current; // 0 → 1 as the heart drops and settles
+  const glow = useRef(new Animated.Value(0)).current;
+  const drops = useRef(LETTERS.map(() => new Animated.Value(0))).current;
+  const tag = useRef(new Animated.Value(0)).current;
   const fade = useRef(new Animated.Value(1)).current;
-  // "Ofunca" drops in from above, bounces, then each letter does a little hop in a wave.
-  const LETTERS = 'Ofunca'.split('');
-  const hops = useRef(LETTERS.map(() => new Animated.Value(0))).current;
   const done = useRef(false);
 
   const finish = () => {
@@ -23,93 +29,120 @@ export function Intro({ onDone }: { onDone: () => void }) {
     Animated.timing(fade, { toValue: 0, duration: 260, useNativeDriver: true }).start(() => onDone());
   };
 
+  // Flight path, relative to the centre of the O: top-right corner → sweep down the left → loop
+  // under and round the right → climb high above the O (biggest here) → hover over the landing spot.
+  const LAND = { x: -46, y: -34 };
+  const P = [0, 0.18, 0.36, 0.52, 0.68, 0.84, 1];
+  const X = [W / 2 + 40, 60, -150, -40, 150, 40, LAND.x];
+  const Y = [-H / 2 - 40, -190, -10, 160, 40, -190, LAND.y - 70];
+  const S = [0.25, 0.35, 0.45, 0.55, 0.75, 1.5, 1.25];
+  const pathX = (v: Animated.Value) => v.interpolate({ inputRange: P, outputRange: X });
+  const pathY = (v: Animated.Value) => v.interpolate({ inputRange: P, outputRange: Y });
+
   useEffect(() => {
-    const wiggle = (to: number, d = 90) =>
-      Animated.timing(spin, { toValue: to, duration: d, easing: Easing.inOut(Easing.quad), useNativeDriver: true });
+    const FLY = 1500;
+    const fly = (v: Animated.Value, delay = 0) =>
+      Animated.timing(v, { toValue: 1, duration: FLY, delay, easing: Easing.inOut(Easing.sin), useNativeDriver: true });
     Animated.sequence([
-      Animated.timing(scale, { toValue: 0.82, duration: 140, easing: Easing.out(Easing.quad), useNativeDriver: true }), // squash…
-      Animated.spring(scale, { toValue: 1, friction: 3, tension: 160, useNativeDriver: true }), // …and pop!
+      Animated.timing(scale, { toValue: 0.86, duration: 130, easing: Easing.out(Easing.quad), useNativeDriver: true }),
+      Animated.spring(scale, { toValue: 1, friction: 3.5, tension: 160, useNativeDriver: true }),
+      Animated.parallel([fly(flight), ...trail.map((t, i) => fly(t, (i + 1) * 45))]),
+      // Drop onto the O, and the O gives a little squash as it catches the heart.
       Animated.parallel([
-        Animated.timing(burst, { toValue: 1, duration: 700, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
-        Animated.sequence([wiggle(-1), wiggle(1), wiggle(-1), wiggle(1), wiggle(0, 120)]),
-        Animated.spring(title, { toValue: 1, friction: 4, tension: 90, delay: 150, useNativeDriver: true }),
+        Animated.spring(land, { toValue: 1, friction: 4, tension: 120, useNativeDriver: true }),
+        Animated.sequence([
+          Animated.delay(120),
+          Animated.timing(scale, { toValue: 0.93, duration: 90, useNativeDriver: true }),
+          Animated.spring(scale, { toValue: 1, friction: 3, tension: 180, useNativeDriver: true }),
+        ]),
+        Animated.timing(glow, { toValue: 1, duration: 500, delay: 120, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
       ]),
       Animated.stagger(
-        70,
-        hops.map((h) =>
-          Animated.sequence([
-            Animated.timing(h, { toValue: 1, duration: 140, easing: Easing.out(Easing.quad), useNativeDriver: true }),
-            Animated.timing(h, { toValue: 0, duration: 160, easing: Easing.in(Easing.quad), useNativeDriver: true }),
-          ]),
-        ),
+        80,
+        drops.map((d) => Animated.spring(d, { toValue: 1, friction: 5, tension: 140, useNativeDriver: true })),
       ),
-      Animated.delay(300),
+      Animated.timing(tag, { toValue: 1, duration: 380, easing: Easing.out(Easing.quad), useNativeDriver: true }),
+      Animated.delay(450),
     ]).start(() => finish());
-    const t = setTimeout(finish, 3600); // safety net
+    const t = setTimeout(finish, 5500); // safety net
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const rotate = spin.interpolate({ inputRange: [-1, 1], outputRange: ['-12deg', '12deg'] });
-  const hop = spin.interpolate({ inputRange: [-1, 0, 1], outputRange: [-10, 0, -10] });
+  // While flying the heart follows the path; once landing starts it drops the last 70 px.
+  const heartY = Animated.add(pathY(flight), land.interpolate({ inputRange: [0, 1], outputRange: [0, 70] }));
+  const heartScale = Animated.multiply(
+    flight.interpolate({ inputRange: P, outputRange: S }),
+    land.interpolate({ inputRange: [0, 1], outputRange: [1, 0.8] }),
+  );
+  const roll = flight.interpolate({ inputRange: [0, 1], outputRange: ['-30deg', '690deg'] });
 
   return (
     <Animated.View style={[st.wrap, { opacity: fade }]}>
       <Pressable style={st.fill} onPress={finish}>
         <View style={st.center}>
-          {SPARKS.map((sp, i) => {
-            const a = (i / SPARKS.length) * Math.PI * 2;
-            const dist = 130 + (i % 2) * 30;
-            return (
-              <Animated.Text
-                key={i}
-                style={[
-                  st.spark,
-                  {
-                    opacity: burst.interpolate({ inputRange: [0, 0.2, 1], outputRange: [0, 1, 0] }),
-                    transform: [
-                      { translateX: burst.interpolate({ inputRange: [0, 1], outputRange: [0, Math.cos(a) * dist] }) },
-                      { translateY: burst.interpolate({ inputRange: [0, 1], outputRange: [0, Math.sin(a) * dist] }) },
-                      { scale: burst.interpolate({ inputRange: [0, 0.3, 1], outputRange: [0.3, 1.3, 0.8] }) },
-                    ],
-                  },
-                ]}
-              >
-                {sp}
-              </Animated.Text>
-            );
-          })}
-          <Animated.View style={{ transform: [{ translateY: hop }, { scale }, { rotate }] }}>
+          <Animated.View style={{ transform: [{ scale }] }}>
             <Image source={require('../assets/splash-icon.png')} style={st.mark} resizeMode="contain" fadeDuration={0} />
           </Animated.View>
+
+          {/* Shooting-star tail: fading sparks that follow the heart's path a beat behind. */}
+          {trail.map((t, i) => (
+            <Animated.View
+              key={i}
+              pointerEvents="none"
+              style={[
+                st.spark,
+                {
+                  opacity: t.interpolate({ inputRange: [0, 0.05, 0.9, 1], outputRange: [0, 0.9 - i * 0.15, 0.6 - i * 0.1, 0] }),
+                  transform: [
+                    { translateX: pathX(t) },
+                    { translateY: pathY(t) },
+                    { scale: t.interpolate({ inputRange: P, outputRange: S.map((v) => v * (0.7 - i * 0.1)) }) },
+                  ],
+                },
+              ]}
+            />
+          ))}
+
+          {/* Soft ring that pulses out when the heart lands. */}
+          <Animated.View
+            pointerEvents="none"
+            style={[
+              st.ring,
+              {
+                opacity: glow.interpolate({ inputRange: [0, 0.2, 1], outputRange: [0, 0.7, 0] }),
+                transform: [{ translateX: LAND.x }, { translateY: LAND.y }, { scale: glow.interpolate({ inputRange: [0, 1], outputRange: [0.3, 2.4] }) }],
+              },
+            ]}
+          />
+
+          <Animated.View pointerEvents="none" style={[st.heart, { transform: [{ translateX: pathX(flight) }, { translateY: heartY }, { scale: heartScale }, { rotate: roll }] }]}>
+            <Ionicons name="heart" size={44} color={PINK} style={st.heartShadow} />
+          </Animated.View>
         </View>
-        <Animated.View
-          style={{
-            alignItems: 'center',
-            opacity: title,
-            transform: [{ translateY: title.interpolate({ inputRange: [0, 1], outputRange: [-160, 0] }) }],
-          }}
-        >
-          <View style={{ flexDirection: 'row' }}>
-            {LETTERS.map((ch, i) => (
-              <Animated.Text
-                key={i}
-                style={[
-                  st.name,
-                  {
-                    transform: [
-                      { translateY: hops[i].interpolate({ inputRange: [0, 1], outputRange: [0, -18] }) },
-                      { rotate: hops[i].interpolate({ inputRange: [0, 1], outputRange: ['0deg', i % 2 ? '10deg' : '-10deg'] }) },
-                    ],
-                  },
-                ]}
-              >
-                {ch}
-              </Animated.Text>
-            ))}
-          </View>
-          <Text style={st.tag}>Your notes. Your tutor. No signal needed.</Text>
-        </Animated.View>
+
+        <View style={{ flexDirection: 'row', marginTop: 4 }}>
+          {LETTERS.map((ch, i) => (
+            <Animated.Text
+              key={i}
+              style={[
+                st.name,
+                {
+                  opacity: drops[i],
+                  transform: [
+                    { translateY: drops[i].interpolate({ inputRange: [0, 1], outputRange: [-46, 0] }) },
+                    { scale: drops[i].interpolate({ inputRange: [0, 0.6, 1], outputRange: [0.4, 1.15, 1] }) },
+                  ],
+                },
+              ]}
+            >
+              {ch}
+            </Animated.Text>
+          ))}
+        </View>
+        <Animated.Text style={[st.tag, { opacity: tag, transform: [{ translateY: tag.interpolate({ inputRange: [0, 1], outputRange: [10, 0] }) }] }]}>
+          {TAGLINE}
+        </Animated.Text>
       </Pressable>
     </Animated.View>
   );
@@ -120,7 +153,10 @@ const st = StyleSheet.create({
   fill: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   center: { width: 260, height: 260, alignItems: 'center', justifyContent: 'center' },
   mark: { width: 240, height: 240 },
-  spark: { position: 'absolute', fontSize: 28 },
-  name: { fontSize: 44, fontWeight: '900', color: '#8B2CF5', letterSpacing: 1, marginTop: 8, textShadowColor: '#FF5FB0', textShadowOffset: { width: 0, height: 3 }, textShadowRadius: 0 },
-  tag: { fontSize: 15, fontWeight: '700', color: '#9A4A00', marginTop: 6 },
+  heart: { position: 'absolute', width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
+  heartShadow: { textShadowColor: 'rgba(255,61,139,0.55)', textShadowOffset: { width: 0, height: 0 }, textShadowRadius: 10 },
+  spark: { position: 'absolute', width: 18, height: 18, borderRadius: 9, backgroundColor: '#FFF6C9', borderWidth: 3, borderColor: '#FF8CC0' },
+  ring: { position: 'absolute', width: 40, height: 40, borderRadius: 20, borderWidth: 3, borderColor: PINK },
+  name: { fontSize: 44, fontWeight: '900', color: '#8B2CF5', letterSpacing: 1, textShadowColor: '#FF5FB0', textShadowOffset: { width: 0, height: 3 }, textShadowRadius: 0 },
+  tag: { fontSize: 15, fontWeight: '700', color: '#9A4A00', marginTop: 8, letterSpacing: 0.3 },
 });
