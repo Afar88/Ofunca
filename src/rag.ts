@@ -261,13 +261,30 @@ function trimExcerpt(t: string, max = 520) {
   return end > max * 0.5 ? cut.slice(0, end + 1) : cut;
 }
 
-export function buildMcqPrompt(excerpt: string, avoid: string[] = []) {
+const MCQ_ANGLES = [
+  'Ask about a different item, term or list entry than the questions already asked.',
+  'Ask about a number, name, date or definition in these notes.',
+  'Ask about a purpose, cause, effect or example in these notes.',
+];
+
+/** Later visits to the same passage read a different slice of it, starting at a sentence boundary. */
+export function excerptWindow(t: string, round: number, size = 520): string {
+  if (!round || t.length <= size) return t;
+  const step = Math.max(160, Math.floor((t.length - size) / 2) || 160);
+  let start = (round * step) % Math.max(1, t.length - Math.floor(size / 2));
+  const dot = t.slice(start, start + 160).search(/[.!?\n]\s+/);
+  if (dot >= 0) start += dot + 1;
+  return t.slice(start).trimStart();
+}
+
+export function buildMcqPrompt(excerpt: string, avoid: string[] = [], round = 0) {
   // Short prompt + trimmed excerpt: on CPU most of the wait is the phone reading the prompt.
   const system =
     'Write one multiple-choice revision question answerable from the notes. Ask it directly, like an exam question: never mention "the excerpt", "the notes" or "the text". ' +
     'Correct answer plus three believable wrong ones, each a few words. JSON only.';
   const user =
-    `Notes:\n${trimExcerpt(excerpt)}\n\n` +
+    `Notes:\n${trimExcerpt(excerptWindow(excerpt, round))}\n\n` +
+    (round ? `${MCQ_ANGLES[(round - 1) % MCQ_ANGLES.length]}\n\n` : '') +
     (avoid.length ? `Already asked (ask about something different): ${avoid.map((q) => `"${q}"`).join('; ')}\n\n` : '') +
     'Write one new multiple-choice question about these notes. Return JSON like {"question":"...","answer":"...","wrong":["...","...","..."]}';
   return [
@@ -379,4 +396,59 @@ export function quizExcerpts(chunks: StoredChunk[], n: number, groupOf?: (c: Sto
     out.push(pool[Math.floor(i / pools.length) % pool.length]);
   }
   return out;
+}
+
+// ---------- Answer-key check (v1.0.14) ----------
+// The small on-device model sometimes keys the wrong option. Each option is scored by how much of it
+// appears in the source excerpt (content words only); a clearly unsupported key next to one clearly
+// supported option is re-keyed, and anything ambiguous is dropped so the quiz moves to the next passage.
+const KEY_STOP = new Set([
+  ...DUP_STOP,
+  'not', 'no', 'all', 'none', 'only', 'more', 'most', 'less', 'very', 'also', 'such', 'other', 'some', 'any', 'has', 'have', 'had', 'will', 'may', 'must',
+]);
+const keyStem = (w: string) => (w.length > 4 && w.endsWith('es') ? w.slice(0, -2) : w.length > 3 && w.endsWith('s') && !w.endsWith('ss') ? w.slice(0, -1) : w);
+const keyNorm = (t: string) => t.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+const keyWords = (t: string) => keyNorm(t).split(' ').filter((w) => (w.length > 2 || /\d/.test(w)) && !KEY_STOP.has(w)).map(keyStem);
+
+/** 0..1 share of an option's content words found in the excerpt; 1.05 when the option appears verbatim. */
+export function optionSupport(option: string, excerpt: string): number {
+  const ex = ` ${keyNorm(excerpt)} `;
+  const on = keyNorm(option);
+  const words = keyWords(option);
+  if (on && on.split(' ').length >= 2 && ex.includes(` ${on} `)) return 1.05;
+  if (!words.length) return 0;
+  const exSet = new Set(keyWords(excerpt));
+  return words.filter((w) => exSet.has(w)).length / words.length;
+}
+
+const STRONG = 0.8;
+const WEAK = 0.5;
+
+/** Checks an MCQ's answer key against its source excerpt. Returns the question (re-keyed if needed) or null to discard. */
+export function checkMcqKey<T extends { answer: string; options: string[]; correct: number }>(q: T, excerpt: string): T | null {
+  if (q.correct < 0 || q.correct >= q.options.length) return null;
+  const scores = q.options.map((o) => optionSupport(o, excerpt));
+  const strong = scores.map((s, i) => (s >= STRONG ? i : -1)).filter((i) => i >= 0);
+  const top = Math.max(...scores);
+  const tied = strong.filter((i) => top - scores[i] < 0.05);
+  if (tied.length >= 2) return null; // two or more options equally backed by the notes: ambiguous
+  const key = scores[q.correct];
+  if (key >= STRONG) return strong.length === 1 || scores[q.correct] === top ? q : null;
+  if (strong.length === 1) {
+    if (key < WEAK) return { ...q, answer: q.options[strong[0]], correct: strong[0] }; // re-key to the one supported option
+    return null; // key half-supported while another option is fully supported: unclear, skip
+  }
+  if (strong.length >= 2) return null;
+  return q; // nothing clearly supported (paraphrased idea): keep the model's key
+}
+
+/** Starts a shown excerpt at a sentence or word boundary instead of mid-word. */
+export function tidySnippetStart(t: string): string {
+  const s = t.trimStart();
+  if (!s || /^[A-Z0-9“"(\-•]/.test(s)) return s;
+  const head = s.slice(0, 120);
+  const m = head.match(/[.!?;:]\s+(?=[A-Z0-9“"(])/);
+  if (m && m.index !== undefined) return s.slice(m.index + m[0].length);
+  const sp = s.indexOf(' ');
+  return sp > 0 && sp < 25 ? s.slice(sp + 1) : s;
 }

@@ -6,7 +6,6 @@ import {
   Easing,
   Alert,
   FlatList,
-  KeyboardAvoidingView,
   Linking,
   Image,
   Modal,
@@ -31,6 +30,7 @@ import NetInfo from '@react-native-community/netinfo';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 
 import { C, DARK, LIGHT, CANDY } from './src/theme';
+import { KeyboardSafe, useKeyboardTop } from './src/keyboard';
 import { PdfExtractor, type PdfExtractorHandle } from './src/pdf/PdfExtractor';
 import { chunkPages, chunkText, type RawChunk } from './src/chunk';
 import { GENERAL, loadHistory, saveHistory, addDoc, clearAll, loadDB, makeId, removeDoc, roundVec, setDocSubject, subjectOf, subjectsOf, type NoteDoc, type StoredChunk } from './src/store';
@@ -80,6 +80,8 @@ import {
   parseMcq,
   MCQ_SCHEMA,
   isNearDuplicate,
+  checkMcqKey,
+  tidySnippetStart,
   quizAvoidList,
   quizExcerpts,
   search,
@@ -791,6 +793,7 @@ function Main() {
   // ---------- Ask ----------
   const [qas, setQas] = useState<QA[]>([]);
   const insets = useSafeAreaInsets();
+  const keyboardOpen = useKeyboardTop() !== null; // tab bar hides while typing so the input sits right on the keyboard
   const [question, setQuestion] = useState('');
   const [scope, setScope] = useState<string>(AUTO); // AUTO = pick the subject that best matches the question
   const [generating, setGenerating] = useState(false);
@@ -890,7 +893,7 @@ function Main() {
             setGenerating(false);
           }
           if (answer.replace(/[^a-z0-9]/gi, '').length < 3) {
-            answer = `From your notes: “${hits[0]?.chunk.text.slice(0, 300) ?? ''}”`;
+            answer = `From your notes: “${tidySnippetStart(hits[0]?.chunk.text ?? '').slice(0, 300)}”`;
           }
         }
         if (!answer.toLowerCase().includes("couldn't find that in your notes")) {
@@ -955,6 +958,7 @@ function Main() {
       const order = shuffle(opts.map((_, i) => i));
       return { ...m, id: makeId('r'), options: order.map((i) => opts[i]), correct: order.indexOf(m.correct ?? 0), picked: undefined, revealed: false };
     });
+    setQuizNote(null);
     setReviewing(true);
     setQuiz(round);
   }
@@ -1007,7 +1011,7 @@ function Main() {
   function confirmClear(what: 'chat' | 'quiz') {
     Alert.alert(what === 'chat' ? 'Clear all questions?' : 'Clear this quiz?', 'This only removes the history. Your notes stay.', [
       { text: 'Cancel', style: 'cancel' },
-      { text: 'Clear', style: 'destructive', onPress: () => (what === 'chat' ? setQas([]) : (setQuiz([]), setReviewing(false))) },
+      { text: 'Clear', style: 'destructive', onPress: () => (what === 'chat' ? setQas([]) : (setQuiz([]), setReviewing(false), setQuizNote(null))) },
     ]);
   }
   function deleteQa(id: string) {
@@ -1062,18 +1066,22 @@ function Main() {
       const target = quizSize === QUIZ_ALL ? excerpts.length : quizSize;
       const asked: { q: string; src: string }[] = [];
       let made = 0;
-      // A rejected (duplicate or broken) question moves on to the next passage; a few spare tries
-      // cover short notes, where passages repeat.
-      const tries = excerpts.length + Math.max(4, Math.ceil(target / 2));
-      for (let i = 0; i < tries && made < target && !stopQuiz.current; i++) {
+      // A rejected question (duplicate, broken or a wrong answer key) moves on to the next passage. When the
+      // passages run out (short notes), they are visited again with a different focus and a different slice of
+      // the passage, until a total attempt budget is spent. Only then does the quiz end short, with a message.
+      const budget = Math.max(target * 3, 12);
+      const visits = new Map<string, number>();
+      for (let i = 0; i < budget && made < target && !stopQuiz.current; i++) {
         const ex = excerpts[i % excerpts.length];
+        const round = visits.get(ex.id) ?? 0;
+        visits.set(ex.id, round + 1);
         setBusy(`Writing question ${made + 1} of ${target}…`);
         let raw = '';
         try {
-          raw = await generate(buildMcqPrompt(ex.text, quizAvoidList(asked, ex.id)), () => {}, {
+          raw = await generate(buildMcqPrompt(ex.text, quizAvoidList(asked, ex.id), round), () => {}, {
             maxTokens: 100, // question + 4 short options fit in ~70 tokens; the JSON grammar stops it when done
             firstTokenMs: 60000,
-            temp: 0.6,
+            temp: round ? 0.8 : 0.6, // revisits: a little more variety
             repeatPenalty: 1.0, // JSON repeats quotes and commas by design; a penalty only fights the format
             jsonSchema: MCQ_SCHEMA,
           });
@@ -1081,7 +1089,9 @@ function Main() {
           continue; // one stuck question never stops the whole quiz
         }
         if (stopQuiz.current) break; // Stop tapped: keep the questions already written
-        const q = parseMcq(raw);
+        const parsed = parseMcq(raw);
+        // Answer key checked against the passage: wrong keys are fixed when clear, otherwise the question is skipped.
+        const q = parsed ? checkMcqKey(parsed, ex.text) : null;
         // Same question (even reworded slightly) as one already in this quiz: skip it, try another passage.
         if (!q || isNearDuplicate(q.question, asked.map((a) => a.q))) continue;
         asked.push({ q: q.question, src: ex.id });
@@ -1093,7 +1103,11 @@ function Main() {
       }
       if (!made && stopQuiz.current) setQuizNote('Quiz stopped.');
       if (made && made < target) {
-        setQuizNote(stopQuiz.current ? `Stopped: ${made} of ${target} questions written.` : `${made} of ${target} questions: that’s all these notes could support this time.`);
+        setQuizNote(
+          stopQuiz.current
+            ? `Stopped: ${made} of ${target} questions written.`
+            : `Made ${made} of ${target} — your notes on this subject are short, so I couldn’t write more different questions. Add more notes for longer quizzes.`,
+        );
       }
       if (!made && !stopQuiz.current) throw new Error('The tutor couldn’t write questions from these notes this time. Please tap Quiz me again.');
     }, 'llm');
@@ -1294,7 +1308,7 @@ function Main() {
         )}
 
         {tab === 'ask' && (
-          <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding">
+          <KeyboardSafe onShow={() => setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 80)}>
             {subjects.length > 0 && <SubjectChips subjects={subjects} value={scopeValid} onChange={setScope} />}
             {qas.length > 0 && !busy && !generating && (
               <View style={s.histBar}>
@@ -1369,7 +1383,7 @@ function Main() {
                 </Pressable>
               )}
             </View>
-          </KeyboardAvoidingView>
+          </KeyboardSafe>
         )}
 
         {tab === 'quiz' && (
@@ -1401,7 +1415,7 @@ function Main() {
             )}
             {!!quizNote && !busy && <Text style={[s.small, { textAlign: 'center', marginBottom: 4 }]}>{quizNote}</Text>}
             <Pressable style={[s.btn, (!!busy || !chunks.length) && s.btnDisabled]} disabled={!!busy || !chunks.length} onPress={makeQuiz}>
-              <Text style={s.btnText}>{quiz.length ? 'New quiz' : 'Quiz me'}</Text>
+              <Text style={s.btnText}>{quizRunning ? 'Writing quiz…' : busy ? 'Please wait…' : quiz.length ? 'New quiz' : 'Quiz me'}</Text>
             </Pressable>
             {mistakes.length > 0 && (
               <Pressable style={[s.btnGhost, !!busy && s.btnDisabled]} disabled={!!busy} onPress={startReview}>
@@ -1470,6 +1484,17 @@ function Main() {
                 )}
               </View>
             ))}
+            {quizRunning && (
+              <View style={[s.card, { flexDirection: 'row', alignItems: 'center', gap: 10 }]}>
+                <ActivityIndicator color={C.primary} />
+                <Text style={[s.body, { flex: 1 }]}>{busy || 'Writing the next question…'}</Text>
+                <Pressable onPress={stopQuizNow} hitSlop={10} accessibilityLabel="Stop writing the quiz">
+                  <Text style={{ color: C.danger, fontWeight: '900' }}>Stop</Text>
+                </Pressable>
+              </View>
+            )}
+            {!!quizNote && !quizRunning && quiz.length > 0 && <Text style={[s.small, { textAlign: 'center', marginTop: 4 }]}>{quizNote}</Text>}
+            {!!busy && <View style={{ height: 70 }} />}
           </ScrollView>
         )}
       </View>
@@ -1487,7 +1512,7 @@ function Main() {
         </View>
       )}
 
-      <View style={s.tabs}>
+      {!keyboardOpen && <View style={s.tabs}>
         {(
           [
             ['notes', 'library', 'Notes'],
@@ -1500,12 +1525,12 @@ function Main() {
             <Text style={[s.tabLabel, tab === k && s.tabLabelOn]}>{label}</Text>
           </Pressable>
         ))}
-      </View>
+      </View>}
 
       <Modal visible={!!editor} animationType="slide" onRequestClose={() => setEditor(null)}>
         <SafeAreaView style={s.safe}>
           <StatusBar style={dark ? 'light' : 'dark'} />
-          <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding">
+          <KeyboardSafe>
             <View style={[s.header, { backgroundColor: C.card, borderBottomWidth: 2, borderBottomColor: C.border }]}>
               <Text style={[s.headerTitle, { flex: 1, color: C.text }]}>{editor?.mode === 'ocr' ? 'Check snapped text' : 'Paste notes'}</Text>
               <Pressable onPress={() => setEditor(null)} hitSlop={10}>
@@ -1549,7 +1574,7 @@ function Main() {
                 <Text style={s.btnText}>Save & index on-device</Text>
               </Pressable>
             </ScrollView>
-          </KeyboardAvoidingView>
+          </KeyboardSafe>
         </SafeAreaView>
       </Modal>
 
@@ -1699,7 +1724,7 @@ function Main() {
       </SideDrawer>
 
       <Modal visible={!!picker} transparent animationType="fade" onRequestClose={() => closePicker(null)}>
-        <KeyboardAvoidingView behavior="padding" style={{ flex: 1 }}>
+        <KeyboardSafe>
         <Pressable style={s.scrim} onPress={() => closePicker(null)}>
           <Pressable style={s.sheet} onPress={() => {}}>
             <Text style={s.h2}>{picker?.title}</Text>
@@ -1712,11 +1737,11 @@ function Main() {
             </Pressable>
           </Pressable>
         </Pressable>
-        </KeyboardAvoidingView>
+        </KeyboardSafe>
       </Modal>
 
       <Modal visible={report !== null} transparent animationType="fade" onRequestClose={() => setReport(null)}>
-        <KeyboardAvoidingView behavior="padding" style={{ flex: 1 }}>
+        <KeyboardSafe>
           <Pressable style={s.scrim} onPress={() => setReport(null)}>
             <Pressable style={s.sheet} onPress={() => {}}>
               <Text style={s.h2}>Report a problem</Text>
@@ -1745,7 +1770,7 @@ function Main() {
               <Text style={[s.small, { marginTop: 8, textAlign: 'center' }]}>WhatsApp and email need internet.</Text>
             </Pressable>
           </Pressable>
-        </KeyboardAvoidingView>
+        </KeyboardSafe>
       </Modal>
 
       <SnapCamera visible={!!snapCam} accent={C.primary} onDone={(r) => snapCam?.(r)} />
@@ -1929,7 +1954,7 @@ function SourceCard({ n, docName, page, text }: { n: number; docName: string; pa
         {page ? ` · p.${page}` : ''}
       </Text>
       <Text style={s.sourceText} numberOfLines={open ? undefined : 4}>
-        “{text}”
+        “{tidySnippetStart(text)}”
       </Text>
     </Pressable>
   );
