@@ -90,7 +90,7 @@ Files and gallery photos are opened with the Android system picker (Storage Acce
 A full pass over every tap, saved file and native call, so a real phone never closes on its own:
 
 - **Quiz answer closed the app:** the vibration permission was blocked; it is now allowed and the buzz can never take the quiz down.
-- **Friendly error instead of a crash:** a top-level error screen with *Try again* (your notes are kept) catches drawing errors, and in release builds any stray JavaScript error shows a short message instead of closing Ofunca. Development builds still show the normal red error screen.
+- **Friendly error instead of a crash:** a top-level error screen with *Try again* (your notes are kept) catches drawing errors, and in release builds any stray JavaScript error shows a short message instead of closing Ofunca. Development builds still show the normal red error screen. If the opening animation itself ever fails, it is simply skipped.
 - **Big PDFs:** if the hidden PDF reader runs out of memory, Android used to close the whole app; now that PDF fails with a clear message and a fresh reader starts.
 - **Old saved history:** quizzes, mistakes and answers saved by earlier versions are cleaned on load (missing options, answer, source or passages), so they can't crash the Quiz or Ask tabs. A damaged notes library file is also cleaned instead of breaking start-up.
 - **Double taps:** Ask, Quiz me, Save, Snap, Download and Import model ignore a second tap while the first is starting, so nothing is asked, saved or generated twice. A quiz answer counts once.

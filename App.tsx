@@ -240,16 +240,18 @@ function MenuRow(p: { C: any; icon: string; label: string; hint?: string; onPres
 }
 
 /** Last line of defence: if a screen throws while drawing, show a calm "Try again" instead of closing. */
-class Guard extends React.Component<{ children: React.ReactNode }, { failed: boolean; round: number }> {
+class Guard extends React.Component<{ children: React.ReactNode; quiet?: () => void }, { failed: boolean; round: number }> {
   state = { failed: false, round: 0 };
   static getDerivedStateFromError() {
     return { failed: true };
   }
   componentDidCatch(e: any) {
     noteError(e, 'screen');
+    this.props.quiet?.();
   }
   render() {
     if (!this.state.failed) return <React.Fragment key={this.state.round}>{this.props.children}</React.Fragment>;
+    if (this.props.quiet) return null; // e.g. the intro: just skip it
     return (
       <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: 28, backgroundColor: '#2B0B5E' }}>
         <Text style={{ color: '#fff', fontSize: 20, fontWeight: '900', textAlign: 'center' }}>Something went wrong</Text>
@@ -284,7 +286,11 @@ export default function App() {
       <Guard>
         <Main />
       </Guard>
-      {intro && <Intro onDone={() => setIntro(false)} />}
+      {intro && (
+        <Guard quiet={() => setIntro(false)}>
+          <Intro onDone={() => setIntro(false)} />
+        </Guard>
+      )}
     </SafeAreaProvider>
   );
 }
