@@ -544,6 +544,21 @@ function Main() {
   // ---------- Paste & Snap modals ----------
   type EditorState = { mode: 'paste' | 'ocr'; title: string; text: string; subject: string; ocr?: OcrResult };
   const [editor, setEditor] = useState<null | EditorState>(null);
+  const [snapPick, setSnapPick] = useState<null | ((v: 'camera' | 'gallery' | null) => void)>(null);
+  // If Android closed Ofunca while the camera was open, finish reading that photo once the AI is ready.
+  const pendingChecked = useRef(false);
+  useEffect(() => {
+    if (ai !== 'ready' || pendingChecked.current || Platform.OS !== 'android') return;
+    pendingChecked.current = true;
+    ImagePicker.getPendingResultAsync()
+      .then(async (r: any) => {
+        const uri = r && !r.canceled && r.assets?.[0]?.uri;
+        if (!uri) return;
+        if (!(await ocrCached())) await installBundledOcr(setBusy);
+        await readPhoto(uri);
+      })
+      .catch((e) => noteError(e, 'pending photo'));
+  }, [ai]);
   const editorOpen = useRef(false);
   const editorQueue = useRef<EditorState[]>([]);
   useEffect(() => {
@@ -571,13 +586,8 @@ function Main() {
       });
       if (!ok) return;
     }
-    const source = await new Promise<'camera' | 'gallery' | null>((resolve) =>
-      Alert.alert('Snap notes', 'Take a new photo or pick one you already have.', [
-        { text: 'Cancel', style: 'cancel', onPress: () => resolve(null) },
-        { text: 'Gallery', onPress: () => resolve('gallery') },
-        { text: 'Camera', onPress: () => resolve('camera') },
-      ], { cancelable: true, onDismiss: () => resolve(null) }),
-    );
+    const source = await new Promise<'camera' | 'gallery' | null>((resolve) => setSnapPick(() => resolve));
+    setSnapPick(null);
     if (!source) return;
     let uri: string | undefined;
     try {
@@ -587,8 +597,15 @@ function Main() {
           Alert.alert('Camera not allowed', 'Allow camera access in Settings, or pick a photo from your gallery.');
           return;
         }
-        const r = await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 0.7 });
-        if (r.canceled || !r.assets?.length) return;
+        // The camera app needs lots of memory. Free the tutor model first so Android doesn't
+        // close Ofunca in the background; if it still does, the photo is picked up on restart.
+        const freed = running.current === 0 && !generating;
+        if (freed) await unloadLlm();
+        const r = await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 0.7, exif: false });
+        if (r.canceled || !r.assets?.length) {
+          if (freed) reloadLlm(device).catch(() => {});
+          return;
+        }
         uri = r.assets[0].uri;
       } else {
         const r = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.7 });
@@ -600,7 +617,10 @@ function Main() {
       Alert.alert('Could not open photos', String(e?.message ?? e));
       return;
     }
-    const photo = uri;
+    await readPhoto(uri);
+  }
+
+  async function readPhoto(photo: string) {
     await guarded('Reading photo…', async () => {
       try {
         // Make room: the tutor model steps aside while the photo reader works, then comes back.
@@ -1508,6 +1528,33 @@ function Main() {
         </KeyboardAvoidingView>
       </Modal>
 
+      <Modal visible={!!snapPick} transparent animationType="fade" onRequestClose={() => snapPick?.(null)}>
+        <Pressable style={s.scrim} onPress={() => snapPick?.(null)}>
+          <Pressable style={s.sheet} onPress={() => {}}>
+            <Text style={s.h2}>Snap notes</Text>
+            <Text style={[s.small, { marginBottom: 14 }]}>Take a new photo or use one you already have.</Text>
+            <View style={{ flexDirection: 'row', gap: 12 }}>
+              {([
+                ['camera', 'camera-outline', 'Camera', 'Take a photo'],
+                ['gallery', 'images-outline', 'Gallery', 'Pick a photo'],
+              ] as const).map(([k, icon, label, sub]) => (
+                <Pressable key={k} style={s.pickTile} onPress={() => snapPick?.(k)}>
+                  <View style={s.pickIcon}>
+                    <Ionicons name={icon} size={30} color={C.primary} />
+                  </View>
+                  <Text style={[s.body, { fontWeight: '900', marginTop: 10 }]}>{label}</Text>
+                  <Text style={s.small}>{sub}</Text>
+                </Pressable>
+              ))}
+            </View>
+            <Text style={[s.small, { marginTop: 14 }]}>Tip: flat page, good light, shot straight on.</Text>
+            <Pressable style={{ alignItems: 'center', marginTop: 14 }} onPress={() => snapPick?.(null)} hitSlop={8}>
+              <Text style={[s.small, { fontWeight: '600' }]}>Cancel</Text>
+            </Pressable>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
       <PdfExtractor ref={pdf} />
     </SafeAreaView>
   );
@@ -1747,6 +1794,8 @@ const makeStyles = () => StyleSheet.create({
   histBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 8 },
   clearLink: { fontSize: 13, fontWeight: '700', color: C.danger },
   moreLink: { fontSize: 12.5, fontWeight: '700', color: C.primary, marginTop: 8 },
+  pickTile: { flex: 1, alignItems: 'center', paddingVertical: 18, borderRadius: 18, borderWidth: 2, borderColor: C.border, backgroundColor: C.bg },
+  pickIcon: { width: 60, height: 60, borderRadius: 30, backgroundColor: C.primarySoft, alignItems: 'center', justifyContent: 'center' },
   scrim: { flex: 1, backgroundColor: 'rgba(14,19,48,0.55)', justifyContent: 'flex-end' },
   sheet: { backgroundColor: C.card, borderTopLeftRadius: 22, borderTopRightRadius: 22, padding: 20, paddingBottom: 28 },
   card: { backgroundColor: C.card, borderRadius: 24, padding: 18, marginTop: 14, borderWidth: 2, borderColor: C.border, borderBottomWidth: 5 },
