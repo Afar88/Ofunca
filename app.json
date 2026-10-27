@@ -1,7 +1,7 @@
 {
   "expo": {
     "name": "Ofunca",
-    "slug": "offline-study-tutor",
+    "slug": "ofunca",
     "version": "1.0.6",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -14,10 +14,10 @@
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.afar88.studytutor"
+      "bundleIdentifier": "com.afar88.ofunca"
     },
     "android": {
-      "package": "com.afar88.studytutor",
+      "package": "com.afar88.ofunca",
       "versionCode": 7,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",

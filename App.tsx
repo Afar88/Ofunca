@@ -72,7 +72,7 @@ type AiState = 'off' | 'loading' | 'embed' | 'ready';
 const AUTO = '__auto__';
 type QuizCard = { id: string; question: string; answer: string; source: StoredChunk; docName: string; revealed: boolean };
 
-const SETTINGS_FILE = (FS.documentDirectory ?? '') + 'study-tutor-settings.json';
+const SETTINGS_FILE = (FS.documentDirectory ?? '') + 'ofunca-settings.json';
 type ThemePref = 'system' | 'light' | 'dark';
 type Settings = { device?: Device; setupDone?: boolean; theme?: ThemePref };
 async function readSettings(): Promise<Settings> {

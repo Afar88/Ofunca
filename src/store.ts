@@ -35,7 +35,7 @@ export type StoredChunk = {
 
 type DB = { version: 1; docs: NoteDoc[]; chunks: StoredChunk[] };
 
-const DIR = (FS.documentDirectory ?? '') + 'study-tutor/';
+const DIR = (FS.documentDirectory ?? '') + 'ofunca/';
 const FILE = DIR + 'library.json';
 
 let cache: DB | null = null;

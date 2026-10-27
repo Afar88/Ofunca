@@ -1,4 +1,4 @@
-# 📘 Offline Study Tutor
+# 🍬 Ofunca
 
 **Ask your class notes anything, even in airplane mode.**
 An Android app that turns your own notes (PDFs, text files, pasted text or photos of handouts) into a private AI tutor. Every answer is grounded in *your* notes and shows the exact passages it came from. All the AI runs **on the phone** through [Tether's QVAC SDK](https://docs.qvac.tether.io). There is no cloud, no account and no data leaving the device.
@@ -9,7 +9,7 @@ Built for the **AI Yako hackathon (Tether QVAC × DoraHacks)**. Suggested track:
 
 ## Why
 
-Students in places with expensive or unreliable data, like much of Nigeria where this was built, still have phones and class notes. Cloud AI tutors need a constant connection, cost data, and send private study material to someone else's servers. Offline Study Tutor needs the internet **once**, to download the models. After that it works anywhere: in a lecture hall with no signal, on a bus, or during a power cut when the router is off.
+Students in places with expensive or unreliable data, like much of Nigeria where this was built, still have phones and class notes. Cloud AI tutors need a constant connection, cost data, and send private study material to someone else's servers. Ofunca needs the internet **once**, to download the models. After that it works anywhere: in a lecture hall with no signal, on a bus, or during a power cut when the router is off.
 
 ## What it does
 
@@ -59,7 +59,7 @@ The models load comfortably side by side on a phone with 8 GB of RAM (tested tar
 ## Offline guarantees
 
 - **Internet is used for exactly one thing:** the first-run model download (`downloadAsset`). After that, `loadModel` loads from the local QVAC cache: the SDK checks the cached files on disk before touching the network.
-- Notes, passages, embeddings, questions and answers are stored only in the app's private storage (`study-tutor/library.json`). Nothing is uploaded, and there is no analytics or telemetry.
+- Notes, passages, embeddings, questions and answers are stored only in the app's private storage (`ofunca/library.json`). Nothing is uploaded, and there is no analytics or telemetry.
 - The PDF reader is a hidden WebView with pdf.js **inlined** and a strict Content-Security-Policy (`default-src 'none'`), so it cannot fetch anything.
 - `android:usesCleartextTraffic="false"`, `android:allowBackup="false"`.
 
@@ -76,9 +76,9 @@ Files and photos are opened with the Android system picker (Storage Access Frame
 
 ## Install (Android phone, arm64, Android 10+)
 
-1. Download `StudyTutor-v1.0.3.apk` to the phone.
+1. Download `Ofunca-v1.0.6.apk` to the phone.
 2. Open it. If asked, allow your browser or file manager to *install unknown apps*, then tap **Install**.
-3. Open **Study Tutor**. On **Wi‑Fi**, tap **Download AI models** (≈1.15 GB, one time).
+3. Open **Ofunca**. On **Wi‑Fi**, tap **Download AI models** (≈1.15 GB, one time).
 4. When you see **"All set!"** you can switch on airplane mode. Everything keeps working.
 
 ## Build from source
@@ -92,7 +92,7 @@ npx expo prebuild --platform android    # QVAC plugin bundles the worker + links
 cd android && ./gradlew assembleRelease # -> app/build/outputs/apk/release/app-release-unsigned.apk
 # sign (v2+v3) with your own keystore:
 KEYSTORE=release.keystore KS_PASS_FILE=pass.txt scripts/sign-apk.sh \
-  android/app/build/outputs/apk/release/app-release-unsigned.apk StudyTutor.apk
+  android/app/build/outputs/apk/release/app-release-unsigned.apk Ofunca.apk
 ```
 
 No Expo/EAS account is needed. CI: `.github/workflows/android-release.yml` builds the unsigned APK on every push to `main`. Signing happens offline with a private key that is never committed.
@@ -120,7 +120,7 @@ Record with the phone's built-in screen recorder (it records offline). Aim for 2
 
 1. **Before recording (on Wi‑Fi):** install the APK, open the app and download the models until you see *All set!*. Have a class-notes PDF in Downloads and a photo of a printed handout in the gallery.
 2. **Start recording.** Pull down quick settings and **turn on airplane mode**, with Wi‑Fi and mobile data visibly off. Say: *"No internet at all from here."*
-3. Open **Study Tutor**. Point at the header chip: **✈ Offline · on-device AI**.
+3. Open **Ofunca**. Point at the header chip: **✈ Offline · on-device AI**.
 4. **Notes → Import PDF / text**, pick the PDF. Show *Reading PDF… page x/y* and *Indexing on-device…*.
 5. **Notes → Snap notes**, pick the handout photo. Show the OCR text in the editable box (and the low-confidence hint if it appears), fix a word, then tap **Save & index on-device**.
 6. **Ask** tab: ask a question from the PDF, e.g. *"Where does the Calvin cycle take place?"* Show the answer streaming, the `[1]` citations, and the **Sources from your notes** cards (document + page). Point at *"Answered on-device in x s"*.

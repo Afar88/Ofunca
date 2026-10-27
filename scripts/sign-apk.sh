@@ -6,7 +6,7 @@ IN="$1"; OUT="$2"
 ALIGNED="$(mktemp --suffix=.apk)"
 # AGP output is already page-aligned (16 KB); only re-align if it is not.
 if zipalign -c -p 4 "$IN" >/dev/null 2>&1; then cp "$IN" "$ALIGNED"; else zipalign -f -p 4 "$IN" "$ALIGNED"; fi
-apksigner sign --ks "$KEYSTORE" --ks-key-alias "${KS_ALIAS:-studytutor}" \
+apksigner sign --ks "$KEYSTORE" --ks-key-alias "${KS_ALIAS:-ofunca}" \
   --ks-pass "file:$KS_PASS_FILE" \
   --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true --v4-signing-enabled false \
   --min-sdk-version 24 \
