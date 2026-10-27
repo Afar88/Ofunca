@@ -1,6 +1,9 @@
 import React, { memo, useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Animated,
+  Dimensions,
+  Easing,
   Alert,
   FlatList,
   KeyboardAvoidingView,
@@ -128,6 +131,41 @@ const DEV: { name: string; links: { icon: string; label: string; hint?: string; 
     { icon: '🐙', label: 'GitHub', hint: 'Afar88', url: 'https://github.com/Afar88' },
   ],
 };
+
+/** ChatGPT-style menu: slides in from the left over a dimmed screen; tap outside or swipe the scrim to close. */
+function SideDrawer(p: { open: boolean; onClose: () => void; C: any; topInset: number; bottomInset: number; children: React.ReactNode }) {
+  const W = Math.min(Dimensions.get('window').width * 0.84, 360);
+  const x = useRef(new Animated.Value(-W)).current;
+  const [shown, setShown] = useState(p.open);
+  useEffect(() => {
+    if (p.open) {
+      setShown(true);
+      Animated.timing(x, { toValue: 0, duration: 230, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start();
+    } else if (shown) {
+      Animated.timing(x, { toValue: -W, duration: 190, easing: Easing.in(Easing.cubic), useNativeDriver: true }).start(() => setShown(false));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [p.open]);
+  if (!shown) return null;
+  const dim = x.interpolate({ inputRange: [-W, 0], outputRange: [0, 1] });
+  return (
+    <Modal visible transparent animationType="none" onRequestClose={p.onClose} statusBarTranslucent>
+      <Animated.View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(14,19,48,0.55)', opacity: dim }]}>
+        <Pressable style={{ flex: 1 }} onPress={p.onClose} />
+      </Animated.View>
+      <Animated.View
+        style={{
+          position: 'absolute', left: 0, top: 0, bottom: 0, width: W,
+          backgroundColor: p.C.card, borderTopRightRadius: 24, borderBottomRightRadius: 24,
+          paddingTop: p.topInset + 16, paddingBottom: p.bottomInset + 8, paddingHorizontal: 16,
+          transform: [{ translateX: x }], elevation: 16,
+        }}
+      >
+        {p.children}
+      </Animated.View>
+    </Modal>
+  );
+}
 
 function MenuRow(p: { C: any; icon: string; label: string; hint?: string; onPress: () => void; danger?: boolean; disabled?: boolean; last?: boolean }) {
   return (
@@ -804,6 +842,12 @@ function Main() {
     <SafeAreaView style={s.safe} edges={['left', 'right', 'bottom']}>
       <StatusBar style="light" />
       <View style={[s.header, { paddingTop: insets.top + 12 }]}>
+        <Pressable onPress={() => setMenu(true)} hitSlop={12} style={s.moreBtn} accessibilityLabel="Open menu">
+          <View style={s.lines}>
+            <View style={[s.line, { width: 18 }]} />
+            <View style={[s.line, { width: 12 }]} />
+          </View>
+        </Pressable>
         <View style={{ flex: 1 }}>
           <Text style={s.headerTitle}>Ofunca</Text>
           <Text style={[s.small, { color: 'rgba(255,255,255,0.8)', fontWeight: '700' }]}>
@@ -822,13 +866,6 @@ function Main() {
             </Text>
           </View>
         )}
-        <Pressable onPress={() => setMenu(true)} hitSlop={12} style={s.moreBtn} accessibilityLabel="More options">
-          <View style={s.dots}>
-            <View style={s.dot} />
-            <View style={s.dot} />
-            <View style={s.dot} />
-          </View>
-        </Pressable>
       </View>
 
       {justDownloaded && (
@@ -1177,11 +1214,18 @@ function Main() {
         </Pressable>
       </Modal>
 
-      <Modal visible={menu} transparent animationType="fade" onRequestClose={() => setMenu(false)}>
-        <Pressable style={s.scrim} onPress={() => setMenu(false)}>
-          <Pressable style={s.sheet} onPress={() => {}}>
-            <ScrollView style={{ maxHeight: 560 }}>
-              <Text style={s.h2}>Menu</Text>
+      <SideDrawer open={menu} onClose={() => setMenu(false)} C={C} topInset={insets.top} bottomInset={insets.bottom}>
+            <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 24 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 4 }}>
+                <Image source={require('./assets/icon.png')} style={{ width: 40, height: 40, borderRadius: 12 }} />
+                <View style={{ flex: 1 }}>
+                  <Text style={[s.h2, { marginBottom: 0 }]}>Ofunca</Text>
+                  <Text style={s.small}>Your offline study buddy · v{APP_VERSION}</Text>
+                </View>
+                <Pressable onPress={() => setMenu(false)} hitSlop={12} accessibilityLabel="Close menu">
+                  <Text style={{ color: C.muted, fontSize: 22, fontWeight: '800' }}>✕</Text>
+                </Pressable>
+              </View>
 
               <Text style={s.menuHead}>📚 STUDY</Text>
               <View style={s.menuGroup}>
@@ -1261,12 +1305,7 @@ function Main() {
                 ))}
               </View>
             </ScrollView>
-            <Pressable style={s.btn} onPress={() => setMenu(false)}>
-              <Text style={s.btnText}>Close</Text>
-            </Pressable>
-          </Pressable>
-        </Pressable>
-      </Modal>
+      </SideDrawer>
 
       <Modal visible={!!picker} transparent animationType="fade" onRequestClose={() => closePicker(null)}>
         <Pressable style={s.scrim} onPress={() => closePicker(null)}>
@@ -1551,8 +1590,10 @@ const makeStyles = () => StyleSheet.create({
   stashTile: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: C.card, borderRadius: 22, padding: 16, marginTop: 16, borderWidth: 2, borderColor: C.border, borderBottomWidth: 5 },
   stashTitle: { color: C.text, fontSize: 18, fontWeight: '900' },
   stashArrow: { color: C.primary, fontSize: 30, fontWeight: '900' },
-  moreBtn: { marginLeft: 8, width: 36, height: 36, borderRadius: 18, backgroundColor: 'rgba(255,255,255,0.22)', alignItems: 'center', justifyContent: 'center' },
+  moreBtn: { marginRight: 10, width: 36, height: 36, borderRadius: 18, backgroundColor: 'rgba(255,255,255,0.22)', alignItems: 'center', justifyContent: 'center' },
   moreText: { color: '#fff', fontSize: 22, fontWeight: '900', marginTop: -4 },
+  lines: { gap: 5, alignItems: 'flex-start' },
+  line: { height: 2.5, borderRadius: 2, backgroundColor: '#fff' },
   dots: { alignItems: 'center', justifyContent: 'center', gap: 3 },
   dot: { width: 4.5, height: 4.5, borderRadius: 3, backgroundColor: '#fff' },
   menuHead: { color: C.muted, fontSize: 12, fontWeight: '900', letterSpacing: 1, marginTop: 16, marginBottom: 6 },
