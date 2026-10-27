@@ -253,7 +253,8 @@ export const MCQ_SCHEMA = {
   required: ['question', 'answer', 'wrong'],
 };
 
-function trimExcerpt(t: string, max = 650) {
+function trimExcerpt(t: string, max = 520) {
+  // ~520 characters (~120 tokens) is enough for one question and keeps the phone's reading time short.
   if (t.length <= max) return t;
   const cut = t.slice(0, max);
   const end = Math.max(cut.lastIndexOf('. '), cut.lastIndexOf('\n'));
@@ -262,22 +263,76 @@ function trimExcerpt(t: string, max = 650) {
 
 export function buildMcqPrompt(excerpt: string, avoid: string[] = []) {
   // Short prompt + trimmed excerpt: on CPU most of the wait is the phone reading the prompt.
-  const system = 'Write one multiple-choice revision question answerable from the note excerpt. Correct answer plus three believable wrong ones, each a few words. JSON only.';
+  const system =
+    'Write one multiple-choice revision question answerable from the notes. Ask it directly, like an exam question: never mention "the excerpt", "the notes" or "the text". ' +
+    'Correct answer plus three believable wrong ones, each a few words. JSON only.';
   const user =
-    `Note excerpt:\n${trimExcerpt(excerpt)}\n\n` +
-    (avoid.length ? `Not these: ${avoid.slice(-4).map((q) => `"${q}"`).join('; ')}\n\n` : '') +
-    'Write one multiple-choice question about this excerpt. Return JSON like {"question":"...","answer":"...","wrong":["...","...","..."]}';
+    `Notes:\n${trimExcerpt(excerpt)}\n\n` +
+    (avoid.length ? `Already asked (ask about something different): ${avoid.map((q) => `"${q}"`).join('; ')}\n\n` : '') +
+    'Write one new multiple-choice question about these notes. Return JSON like {"question":"...","answer":"...","wrong":["...","...","..."]}';
   return [
     { role: 'system' as const, content: system },
     { role: 'user' as const, content: user },
   ];
 }
 
+const DUP_STOP = new Set(
+  'a an the of to in on for and or is are was were be been what which who whom why how when where does do did can could should would about with from by as at it its this that these those into than then there their according mentioned stated described note notes excerpt text passage primary main'.split(' '),
+);
+const normQ = (q: string) => q.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+const qTokens = (q: string) => new Set(normQ(q).split(' ').filter((w) => (w.length > 1 || /\d/.test(w)) && !DUP_STOP.has(w)));
+
+/** True when a new quiz question is the same as (or a light rewording of) one already in the quiz. */
+export function isNearDuplicate(q: string, prior: string[]): boolean {
+  const n = normQ(q);
+  if (!n) return true;
+  const t = qTokens(q);
+  const stem = n.split(' ').slice(0, 7).join(' ');
+  for (const p of prior) {
+    const pn = normQ(p);
+    if (pn === n) return true;
+    if (stem.split(' ').length >= 5 && pn.split(' ').slice(0, 7).join(' ') === stem) return true; // same question opening
+    const pt = qTokens(p);
+    if (!t.size || !pt.size) continue;
+    let both = 0;
+    for (const w of t) if (pt.has(w)) both++;
+    const jaccard = both / (t.size + pt.size - both);
+    const overlap = both / Math.min(t.size, pt.size);
+    if (jaccard >= 0.6 || (overlap >= 0.85 && Math.min(t.size, pt.size) >= 3)) return true;
+  }
+  return false;
+}
+
+/** Earlier questions to show the model: ones from the same passage first (most likely to repeat), then the
+ *  newest, trimmed to ~450 characters so the prompt stays small. Every question is still checked in code. */
+export function quizAvoidList(asked: { q: string; src: string }[], src: string, maxChars = 450): string[] {
+  const order = [...asked.filter((a) => a.src === src).reverse(), ...asked.filter((a) => a.src !== src).reverse()];
+  const out: string[] = [];
+  let len = 0;
+  for (const a of order) {
+    if (len + a.q.length > maxChars) break;
+    out.push(a.q);
+    len += a.q.length + 4;
+  }
+  return out;
+}
+
+/** Removes small-model filler like ", as mentioned in the note excerpt" from a question. */
+export function tidyQuestion(q: string): string {
+  return q
+    .replace(/,?\s*(?:as\s+)?(?:mentioned|stated|described|given|discussed|explained|outlined)\s+in\s+the\s+(?:note\s+|given\s+)?(?:excerpts?|notes?|text|passage)\b/gi, '')
+    .replace(/^\s*(?:according\s+to|based\s+on|in)\s+the\s+(?:note\s+|given\s+)?(?:excerpts?|notes?|text|passage)\s*,\s*/i, '')
+    .replace(/\s+([?.!,])/g, '$1')
+    .replace(/\s{2,}/g, ' ')
+    .replace(/^./, (c) => c.toUpperCase())
+    .trim();
+}
+
 export function parseMcq(raw: string): { question: string; answer: string; options: string[]; correct: number } | null {
   const m = raw.match(/\{[\s\S]*\}/);
   try {
     const o = JSON.parse(m ? m[0] : raw);
-    const q = typeof o?.question === 'string' ? o.question.trim() : '';
+    const q = typeof o?.question === 'string' ? tidyQuestion(o.question.trim()) : '';
     const a = typeof o?.answer === 'string' ? o.answer.trim() : '';
     if (!q || !a) return null;
     const norm = (x: string) => x.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();

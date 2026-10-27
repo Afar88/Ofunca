@@ -392,7 +392,7 @@ export type ChatMsg = { role: 'system' | 'user' | 'assistant'; content: string }
 export async function generate(
   history: ChatMsg[],
   onToken: (fullText: string) => void,
-  opts: { maxTokens?: number; temp?: number; jsonSchema?: object; firstTokenMs?: number } = {},
+  opts: { maxTokens?: number; temp?: number; repeatPenalty?: number; jsonSchema?: object; firstTokenMs?: number } = {},
 ): Promise<string> {
   if (!llmId && llmReload) await llmReload;
   if (!llmId) throw new Error('Models are not loaded yet');
@@ -400,7 +400,7 @@ export async function generate(
     modelId: llmId,
     history,
     stream: true,
-    generationParams: { temp: opts.temp ?? 0.2, predict: opts.maxTokens ?? 400, top_p: 0.9, repeat_penalty: 1.15 },
+    generationParams: { temp: opts.temp ?? 0.2, predict: opts.maxTokens ?? 400, top_p: 0.9, repeat_penalty: opts.repeatPenalty ?? 1.15 },
     ...(opts.jsonSchema
       ? { responseFormat: { type: 'json_schema', json_schema: { name: 'quiz', schema: opts.jsonSchema } } }
       : {}),

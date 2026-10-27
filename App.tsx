@@ -13,6 +13,7 @@ import {
   Platform,
   Pressable as RNPressable,
   Vibration,
+  Keyboard,
   ScrollView,
   StyleSheet,
   Text,
@@ -78,6 +79,8 @@ import {
   buildMcqPrompt,
   parseMcq,
   MCQ_SCHEMA,
+  isNearDuplicate,
+  quizAvoidList,
   quizExcerpts,
   search,
   type Hit, splitQuestions, bestDocHits } from './src/rag';
@@ -619,6 +622,7 @@ function Main() {
     return new Promise((resolve) => setPicker({ title, value: initial, resolve }));
   }
   function closePicker(v: string | null) {
+    Keyboard.dismiss();
     picker?.resolve(v == null ? null : v.trim() || GENERAL);
     setPicker(null);
   }
@@ -764,6 +768,7 @@ function Main() {
   const savingEditor = useRef(false);
   async function saveEditor() {
     if (!editor || savingEditor.current) return;
+    Keyboard.dismiss(); // the keyboard must not stay up over the indexing screen
     const { title, text, mode, subject } = editor;
     if (text.trim().length < 30) {
       Alert.alert('Too short', 'Add a bit more text (at least a couple of sentences).');
@@ -798,6 +803,7 @@ function Main() {
 
   // A reply to an earlier answer reuses that answer's passages, so it stays on the same topic.
   async function followUp(prev: QA, text: string) {
+    Keyboard.dismiss(); // Shorter / Reply: put the keyboard away so the answer is visible
     setReplyTo(null);
     const id = makeId('q');
     const t0 = Date.now();
@@ -811,7 +817,7 @@ function Main() {
           await generate(
             buildFollowUpPrompt(prev.question, prev.answer, text, prev.hits),
             (txt) => setQas((p) => p.map((x) => (x.id === id ? { ...x, answer: cleanAnswer(txt) } : x))),
-            { maxTokens: 200 },
+            { maxTokens: 150 },
           ),
         );
       } finally {
@@ -835,6 +841,7 @@ function Main() {
   async function askOnce() {
     const q = question.trim();
     if (!q) return;
+    Keyboard.dismiss(); // sent: put the keyboard away so the answer is visible while it is written
     if (replyTo) {
       setQuestion('');
       await followUp(replyTo, q);
@@ -876,7 +883,7 @@ function Main() {
               await generate(
                 buildAnswerPrompt(part, hits),
                 (txt) => setQas((prev) => prev.map((x) => (x.id === id ? { ...x, answer: show(cleanAnswer(txt)) } : x))),
-                { maxTokens: multi ? 140 : 220 },
+                { maxTokens: multi ? 110 : 160 },
               ),
             );
           } finally {
@@ -908,6 +915,7 @@ function Main() {
   // ---------- Quiz ----------
   const [quiz, setQuiz] = useState<QuizCard[]>([]);
   const [quizSize, setQuizSize] = useState(10);
+  const [quizRunning, setQuizRunning] = useState(false); // true while questions are still being written
   const [party, setParty] = useState(false);
   // Questions answered wrong are kept (across restarts) for a "Review my mistakes" round.
   const [mistakes, setMistakes] = useState<QuizCard[]>([]);
@@ -953,14 +961,14 @@ function Main() {
   const celebrated = useRef('');
   useEffect(() => {
     const mcq = quiz.filter((q) => q.options);
-    if (!mcq.length || busy) return;
+    if (!mcq.length || busy || quizRunning) return; // only once every question has been written
     const key = mcq.map((q) => q.id).join(',');
     if (celebrated.current === key) return;
     if (mcq.every((q) => q.picked !== undefined && q.picked === q.correct)) {
       celebrated.current = key;
       setParty(true);
     }
-  }, [quiz, busy]);
+  }, [quiz, busy, quizRunning]);
 
   // ---------- Saved history: answers and quizzes are still there after closing the app ----------
   const historyLoaded = useRef(false);
@@ -1011,7 +1019,6 @@ function Main() {
 
   const makingQuiz = useRef(false);
   const stopQuiz = useRef(false);
-  const [quizRunning, setQuizRunning] = useState(false);
   const [quizNote, setQuizNote] = useState<string | null>(null);
   function stopQuizNow() {
     stopQuiz.current = true;
@@ -1024,9 +1031,11 @@ function Main() {
       await makeQuizOnce();
     } finally {
       makingQuiz.current = false;
+      setQuizRunning(false); // never leave the score stuck in "still writing" mode
     }
   }
   async function makeQuizOnce() {
+    Keyboard.dismiss();
     const pool = chunksIn(scopeValid);
     if (!pool.length) {
       Alert.alert('No notes yet', 'Add some notes first (or try the sample notes).');
@@ -1051,17 +1060,21 @@ function Main() {
       }
       if (!excerpts.length) throw new Error('Your notes don’t have enough text for a quiz yet. Add a bit more and try again.');
       const target = quizSize === QUIZ_ALL ? excerpts.length : quizSize;
-      const asked: string[] = [];
+      const asked: { q: string; src: string }[] = [];
       let made = 0;
-      for (let i = 0; i < excerpts.length + 4 && made < target && !stopQuiz.current; i++) {
+      // A rejected (duplicate or broken) question moves on to the next passage; a few spare tries
+      // cover short notes, where passages repeat.
+      const tries = excerpts.length + Math.max(4, Math.ceil(target / 2));
+      for (let i = 0; i < tries && made < target && !stopQuiz.current; i++) {
         const ex = excerpts[i % excerpts.length];
         setBusy(`Writing question ${made + 1} of ${target}…`);
         let raw = '';
         try {
-          raw = await generate(buildMcqPrompt(ex.text, asked), () => {}, {
-            maxTokens: 120,
+          raw = await generate(buildMcqPrompt(ex.text, quizAvoidList(asked, ex.id)), () => {}, {
+            maxTokens: 100, // question + 4 short options fit in ~70 tokens; the JSON grammar stops it when done
             firstTokenMs: 60000,
-          temp: 0.6,
+            temp: 0.6,
+            repeatPenalty: 1.0, // JSON repeats quotes and commas by design; a penalty only fights the format
             jsonSchema: MCQ_SCHEMA,
           });
         } catch {
@@ -1069,8 +1082,9 @@ function Main() {
         }
         if (stopQuiz.current) break; // Stop tapped: keep the questions already written
         const q = parseMcq(raw);
-        if (!q || asked.some((x) => x.toLowerCase() === q.question.toLowerCase())) continue;
-        asked.push(q.question);
+        // Same question (even reworded slightly) as one already in this quiz: skip it, try another passage.
+        if (!q || isNearDuplicate(q.question, asked.map((a) => a.q))) continue;
+        asked.push({ q: q.question, src: ex.id });
         made++;
         setQuiz((prev) => [
           ...prev,
@@ -1382,7 +1396,7 @@ function Main() {
             {quiz.some((q) => q.picked !== undefined) && (
               <Text style={s.score}>
                 Score: {quiz.filter((q) => q.picked !== undefined && q.picked === q.correct).length} / {quiz.filter((q) => q.picked !== undefined).length}
-                {quiz.every((q) => !q.options || q.picked !== undefined) ? ` 🎉 Done!` : ''}
+                {!quizRunning && quiz.every((q) => !q.options || q.picked !== undefined) ? ` 🎉 Done!` : ''}
               </Text>
             )}
             {!!quizNote && !busy && <Text style={[s.small, { textAlign: 'center', marginBottom: 4 }]}>{quizNote}</Text>}
