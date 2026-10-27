@@ -924,7 +924,7 @@ function Main() {
         <ScrollView contentContainerStyle={s.setup}>
           <BrandMark />
           <Text style={s.title}>Ofunca</Text>
-          <Text style={s.tagline}>Study smart. Anywhere. No data needed.</Text>
+          <Text style={s.tagline}>Study. Anywhere. No connection.</Text>
           <Text style={s.sub}>Ask your class notes anything and get answers straight from them, with the AI running entirely on your phone.</Text>
           {phase === 'needDownload' || phase === 'downloading' ? (
             <View style={s.card}>
@@ -1058,8 +1058,8 @@ function Main() {
         {tab === 'notes' && (
           <ScrollView contentContainerStyle={s.pad}>
             <View style={s.actions}>
-              <ActionBtn icon="document-text-outline" label="Import PDF / text" active={busy ? lastAction === 'import' : false} onPress={() => act('import', importFile)} />
-              <ActionBtn icon="camera-outline" label="Snap notes" active={busy ? lastAction === 'snap' : false} onPress={() => act('snap', snapNotes)} />
+              <ActionBtn icon="document-text-outline" label="PDF / file" active={busy ? lastAction === 'import' : false} onPress={() => act('import', importFile)} />
+              <ActionBtn icon="camera-outline" label="Snap photo" active={busy ? lastAction === 'snap' : false} onPress={() => act('snap', snapNotes)} />
               <ActionBtn icon="clipboard-outline" label="Paste text" onPress={() => act('paste', async () => openEditor({ mode: 'paste', title: '', text: '', subject: '' }))} />
             </View>
             {!hideGuide && (
@@ -1677,8 +1677,8 @@ function hasProgress(dl: Partial<Record<ModelKey, DlState>>) {
 
 function ActionBtn({ icon, label, onPress, active }: { icon: string; label: string; onPress: () => void; active?: boolean }) {
   return (
-    <Pressable style={[s.action, active && { borderColor: C.accent, borderWidth: 2 }]} onPress={onPress}>
-      {active ? <ActivityIndicator color={C.accent} style={{ height: 28 }} /> : <Ionicons name={icon as any} size={28} color={C.primary} />}
+    <Pressable style={[s.action, active && { borderColor: C.accent }]} onPress={onPress}>
+      <View style={s.actionBadge}>{active ? <ActivityIndicator color={C.accent} size="small" /> : <Ionicons name={icon as any} size={19} color={C.primary} />}</View>
       <Text style={s.actionLabel}>{label}</Text>
     </Pressable>
   );
@@ -1855,10 +1855,11 @@ const makeStyles = () => StyleSheet.create({
   banner: { backgroundColor: C.ok, padding: 12 },
   bannerText: { color: C.okText, fontWeight: '600', fontSize: 13 },
   pad: { padding: 16, paddingBottom: 30 },
-  actions: { flexDirection: 'row', gap: 10 },
-  action: { flex: 1, backgroundColor: C.card, borderRadius: 22, paddingVertical: 16, alignItems: 'center', borderWidth: 2, borderColor: C.border, borderBottomWidth: 5 },
+  actions: { flexDirection: 'row', gap: 8 },
+  action: { flex: 1, backgroundColor: C.card, borderRadius: 14, paddingVertical: 10, paddingHorizontal: 6, alignItems: 'center', borderWidth: 1, borderColor: C.border },
+  actionBadge: { width: 34, height: 34, borderRadius: 10, backgroundColor: C.primarySoft, alignItems: 'center', justifyContent: 'center' },
   actionIcon: { fontSize: 28 },
-  actionLabel: { fontSize: 12.5, fontWeight: '800', color: C.text, marginTop: 4, textAlign: 'center' },
+  actionLabel: { fontSize: 12, fontWeight: '700', color: C.text, marginTop: 6, textAlign: 'center', letterSpacing: 0.2 },
   docRow: { flexDirection: 'row', alignItems: 'center', backgroundColor: C.card, borderRadius: 20, padding: 14, marginTop: 10, borderWidth: 2, borderColor: C.border, borderBottomWidth: 4 },
   docIcon: { fontSize: 22, marginRight: 12 },
   docName: { fontSize: 15, fontWeight: '800', color: C.text },

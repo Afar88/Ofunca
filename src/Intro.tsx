@@ -1,14 +1,16 @@
-// Intro: the Ofunca O pops in, then a small heart streaks in from the top corner like a shooting
+// Intro: the Ofunca O pops in bare, then its graduation hat streaks in from the top corner like a shooting
 // star, loops around the O, swells as it climbs, and drops onto the O with a bounce. Then the
 // letters of "Ofunca" fall in one by one and the tagline fades up. Plays over loading. Tap to skip.
 import React, { useEffect, useRef } from 'react';
 import { Animated, Dimensions, Easing, Image, Pressable, StyleSheet, Text, View } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
 
 const PINK = '#FF3D8B';
 const TRAIL = 5;
 const LETTERS = 'Ofunca'.split('');
-export const TAGLINE = 'Study smart. Anywhere. No data needed.';
+export const TAGLINE = 'Study. Anywhere. No connection.';
+// The hat as cut from the logo (346×278 of 1024), shown at the logo's 240 px scale.
+const HAT_W = 81;
+const HAT_H = 65;
 
 export function Intro({ onDone }: { onDone: () => void }) {
   const { width: W, height: H } = Dimensions.get('window');
@@ -16,7 +18,7 @@ export function Intro({ onDone }: { onDone: () => void }) {
   const scale = useRef(new Animated.Value(1)).current;
   const flight = useRef(new Animated.Value(0)).current;
   const trail = useRef(Array.from({ length: TRAIL }, () => new Animated.Value(0))).current;
-  const land = useRef(new Animated.Value(0)).current; // 0 → 1 as the heart drops and settles
+  const land = useRef(new Animated.Value(0)).current; // 0 → 1 as the hat drops and settles
   const glow = useRef(new Animated.Value(0)).current;
   const drops = useRef(LETTERS.map(() => new Animated.Value(0))).current;
   const tag = useRef(new Animated.Value(0)).current;
@@ -31,7 +33,7 @@ export function Intro({ onDone }: { onDone: () => void }) {
 
   // Flight path, relative to the centre of the O: top-right corner → sweep down the left → loop
   // under and round the right → climb high above the O (biggest here) → hover over the landing spot.
-  const LAND = { x: -46, y: -34 };
+  const LAND = { x: 21, y: -39 }; // where the hat sits on the full logo
   const P = [0, 0.18, 0.36, 0.52, 0.68, 0.84, 1];
   const X = [W / 2 + 40, 60, -150, -40, 150, 40, LAND.x];
   const Y = [-H / 2 - 40, -190, -10, 160, 40, -190, LAND.y - 70];
@@ -47,7 +49,7 @@ export function Intro({ onDone }: { onDone: () => void }) {
       Animated.timing(scale, { toValue: 0.86, duration: 130, easing: Easing.out(Easing.quad), useNativeDriver: true }),
       Animated.spring(scale, { toValue: 1, friction: 3.5, tension: 160, useNativeDriver: true }),
       Animated.parallel([fly(flight), ...trail.map((t, i) => fly(t, (i + 1) * 45))]),
-      // Drop onto the O, and the O gives a little squash as it catches the heart.
+      // Drop onto the O, and the O gives a little squash as it catches the hat.
       Animated.parallel([
         Animated.spring(land, { toValue: 1, friction: 4, tension: 120, useNativeDriver: true }),
         Animated.sequence([
@@ -69,23 +71,23 @@ export function Intro({ onDone }: { onDone: () => void }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // While flying the heart follows the path; once landing starts it drops the last 70 px.
-  const heartY = Animated.add(pathY(flight), land.interpolate({ inputRange: [0, 1], outputRange: [0, 70] }));
-  const heartScale = Animated.multiply(
+  // While flying the hat follows the path; once landing starts it drops the last 70 px.
+  const hatY = Animated.add(pathY(flight), land.interpolate({ inputRange: [0, 1], outputRange: [0, 70] }));
+  const hatScale = Animated.multiply(
     flight.interpolate({ inputRange: P, outputRange: S }),
     land.interpolate({ inputRange: [0, 1], outputRange: [1, 0.8] }),
   );
-  const roll = flight.interpolate({ inputRange: [0, 1], outputRange: ['-30deg', '690deg'] });
+  const roll = flight.interpolate({ inputRange: [0, 1], outputRange: ['-360deg', '720deg'] });
 
   return (
     <Animated.View style={[st.wrap, { opacity: fade }]}>
       <Pressable style={st.fill} onPress={finish}>
         <View style={st.center}>
           <Animated.View style={{ transform: [{ scale }] }}>
-            <Image source={require('../assets/splash-icon.png')} style={st.mark} resizeMode="contain" fadeDuration={0} />
+            <Image source={require('../assets/intro-o.png')} style={st.mark} resizeMode="contain" fadeDuration={0} />
           </Animated.View>
 
-          {/* Shooting-star tail: fading sparks that follow the heart's path a beat behind. */}
+          {/* Shooting-star tail: fading sparks that follow the hat's path a beat behind. */}
           {trail.map((t, i) => (
             <Animated.View
               key={i}
@@ -104,7 +106,7 @@ export function Intro({ onDone }: { onDone: () => void }) {
             />
           ))}
 
-          {/* Soft ring that pulses out when the heart lands. */}
+          {/* Soft ring that pulses out when the hat lands. */}
           <Animated.View
             pointerEvents="none"
             style={[
@@ -116,8 +118,8 @@ export function Intro({ onDone }: { onDone: () => void }) {
             ]}
           />
 
-          <Animated.View pointerEvents="none" style={[st.heart, { transform: [{ translateX: pathX(flight) }, { translateY: heartY }, { scale: heartScale }, { rotate: roll }] }]}>
-            <Ionicons name="heart" size={44} color={PINK} style={st.heartShadow} />
+          <Animated.View pointerEvents="none" style={[st.hat, { transform: [{ translateX: pathX(flight) }, { translateY: hatY }, { scale: hatScale }, { rotate: roll }] }]}>
+            <Image source={require('../assets/intro-cap.png')} style={{ width: HAT_W, height: HAT_H }} resizeMode="contain" fadeDuration={0} />
           </Animated.View>
         </View>
 
@@ -153,8 +155,7 @@ const st = StyleSheet.create({
   fill: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   center: { width: 260, height: 260, alignItems: 'center', justifyContent: 'center' },
   mark: { width: 240, height: 240 },
-  heart: { position: 'absolute', width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
-  heartShadow: { textShadowColor: 'rgba(255,61,139,0.55)', textShadowOffset: { width: 0, height: 0 }, textShadowRadius: 10 },
+  hat: { position: 'absolute', width: HAT_W, height: HAT_H, alignItems: 'center', justifyContent: 'center' },
   spark: { position: 'absolute', width: 18, height: 18, borderRadius: 9, backgroundColor: '#FFF6C9', borderWidth: 3, borderColor: '#FF8CC0' },
   ring: { position: 'absolute', width: 40, height: 40, borderRadius: 20, borderWidth: 3, borderColor: PINK },
   name: { fontSize: 44, fontWeight: '900', color: '#8B2CF5', letterSpacing: 1, textShadowColor: '#FF5FB0', textShadowOffset: { width: 0, height: 3 }, textShadowRadius: 0 },
