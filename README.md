@@ -26,7 +26,7 @@ Students in places with expensive or unreliable data, like much of Nigeria where
 | **History** | Ask and Quiz history survive app restarts |
 | **Menu** | Left drawer (two-line button, top left): Study Stash, guide, theme and speed, clear data, privacy, Built with, developer contact |
 | **Report a problem** | Users type the issue and send it by **SMS, so no internet data is needed**, or by WhatsApp or email when online. App version, Android version and the app's last error are added automatically; 300-character cap keeps it to about two SMS |
-| **Status dot** | The header shows "On-device AI" (or "Offline · on-device AI") for a few seconds, then shrinks to a green dot; tap the dot to see it again. Everything works offline |
+| **Status dot** | The header shows "On-device AI" (or "Offline · on-device AI") for a few seconds, then shrinks to a green dot; tap the dot to see it again, and tap the badge to tuck it away at once. Everything works offline |
 
 ## How it uses QVAC
 

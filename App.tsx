@@ -1015,7 +1015,7 @@ function Main() {
             <Text style={s.chipText}>AI warming up</Text>
           </View>
         ) : (
-          <Pressable onPress={() => flashChip(3000)} hitSlop={12} accessibilityLabel="On-device AI status">
+          <Pressable onPress={() => { if (chipOpen) { clearTimeout(chipTimer.current); setChipOpen(false); } else flashChip(3000); }} hitSlop={12} accessibilityLabel="On-device AI status">
             {chipOpen ? (
               <View style={[s.chip, online === false ? s.chipOffline : s.chipOnline]}>
                 <Text style={s.chipText}>{online === false ? '✈ Offline · on-device AI' : '● On-device AI'}</Text>
