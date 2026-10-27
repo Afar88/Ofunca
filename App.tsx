@@ -592,17 +592,17 @@ function Main() {
     let uri: string | undefined;
     try {
       const perm = await Camera.requestCameraPermissionsAsync();
-      let pick: SnapResult = 'gallery';
       if (perm.granted) {
-        pick = await new Promise<SnapResult>((resolve) => setSnapCam(() => resolve));
+        // Camera, gallery shortcut and crop all happen inside Ofunca's own camera screen.
+        const pick = await new Promise<SnapResult>((resolve) => setSnapCam(() => resolve));
         setSnapCam(null);
-      }
-      if (!pick) return;
-      if (pick === 'gallery') {
-        const r = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.7 });
+        if (!pick) return;
+        uri = pick.uri;
+      } else {
+        const r = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.7, allowsEditing: true });
         if (r.canceled || !r.assets?.length) return;
         uri = r.assets[0].uri;
-      } else uri = pick.uri;
+      }
     } catch (e: any) {
       noteError(e);
       Alert.alert('Could not open the camera', String(e?.message ?? e));

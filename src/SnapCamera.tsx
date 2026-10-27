@@ -1,10 +1,16 @@
-import React, { useRef, useState } from 'react';
-import { ActivityIndicator, Image, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { ActivityIndicator, Image, Modal, PanResponder, Pressable, StyleSheet, Text, View } from 'react-native';
+import * as ImagePicker from 'expo-image-picker';
+import * as ImageManipulator from 'expo-image-manipulator';
 import { CameraView } from 'expo-camera';
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-export type SnapResult = { uri: string } | 'gallery' | null;
+export type SnapResult = { uri: string } | null;
+
+type Shot = { uri: string; w: number; h: number };
+type Box = { x: number; y: number; w: number; h: number };
+const MIN = 60;
 
 /**
  * Ofunca's own camera. It runs inside the app, so Android never has to close Ofunca to make
@@ -15,7 +21,93 @@ export default function SnapCamera({ visible, accent, onDone }: { visible: boole
   const [ready, setReady] = useState(false);
   const [torch, setTorch] = useState(false);
   const [shooting, setShooting] = useState(false);
-  const [shot, setShot] = useState<string | null>(null);
+  const [shot, setShotRaw] = useState<Shot | null>(null);
+  const [area, setArea] = useState({ w: 0, h: 0 });
+  const [box, setBox] = useState<Box | null>(null);
+  const boxRef = useRef<Box | null>(null);
+  const start = useRef<Box | null>(null);
+  const [working, setWorking] = useState(false);
+
+  /** Where the photo sits on screen (it's letterboxed to fit). */
+  const fit = useMemo(() => {
+    if (!shot || !area.w) return null;
+    const k = Math.min(area.w / shot.w, area.h / shot.h);
+    const w = shot.w * k, h = shot.h * k;
+    return { k, w, h, x: (area.w - w) / 2, y: (area.h - h) / 2 };
+  }, [shot, area]);
+
+  function putBox(b: Box | null) {
+    boxRef.current = b;
+    setBox(b);
+  }
+  function setShot(u: string | null) {
+    putBox(null);
+    setReady(false);
+    if (!u) return setShotRaw(null);
+    Image.getSize(u, (w, h) => setShotRaw({ uri: u, w, h }), () => setShotRaw({ uri: u, w: 1000, h: 1400 }));
+  }
+  // Start with a box just inside the photo's edges.
+  useEffect(() => {
+    if (!fit) return;
+    const m = Math.min(fit.w, fit.h) * 0.06;
+    putBox({ x: m, y: m, w: fit.w - 2 * m, h: fit.h - 2 * m });
+  }, [fit]);
+
+  /** One drag handler per corner (and one for moving the whole box). */
+  const handles = useMemo(() => {
+    const make = (kind: 'tl' | 'tr' | 'bl' | 'br' | 'move') =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => true,
+        onPanResponderGrant: () => (start.current = boxRef.current),
+        onPanResponderMove: (_e, g) => {
+          const b0 = start.current;
+          const f = fitRef.current;
+          if (!b0 || !f) return;
+          let { x, y, w, h } = b0;
+          const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+          if (kind === 'move') {
+            x = clamp(b0.x + g.dx, 0, f.w - w);
+            y = clamp(b0.y + g.dy, 0, f.h - h);
+          } else {
+            if (kind === 'tl' || kind === 'bl') { const nx = clamp(b0.x + g.dx, 0, b0.x + b0.w - MIN); w = b0.w + (b0.x - nx); x = nx; }
+            else w = clamp(b0.w + g.dx, MIN, f.w - b0.x);
+            if (kind === 'tl' || kind === 'tr') { const ny = clamp(b0.y + g.dy, 0, b0.y + b0.h - MIN); h = b0.h + (b0.y - ny); y = ny; }
+            else h = clamp(b0.h + g.dy, MIN, f.h - b0.y);
+          }
+          putBox({ x, y, w, h });
+        },
+      });
+    return { tl: make('tl'), tr: make('tr'), bl: make('bl'), br: make('br'), move: make('move') };
+  }, []);
+  const fitRef = useRef(fit);
+  fitRef.current = fit;
+
+  async function pickGallery() {
+    const r = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.8 });
+    if (!r.canceled && r.assets?.length) setShot(r.assets[0].uri);
+  }
+
+  async function useCropped() {
+    if (!shot) return;
+    const b = boxRef.current;
+    if (!b || !fit) return finish({ uri: shot.uri });
+    setWorking(true);
+    try {
+      const crop = {
+        originX: Math.max(0, Math.round(b.x / fit.k)),
+        originY: Math.max(0, Math.round(b.y / fit.k)),
+        width: Math.min(shot.w, Math.round(b.w / fit.k)),
+        height: Math.min(shot.h, Math.round(b.h / fit.k)),
+      };
+      const full = crop.width >= shot.w * 0.97 && crop.height >= shot.h * 0.97;
+      const out = full ? shot : await ImageManipulator.manipulateAsync(shot.uri, [{ crop }], { compress: 0.85, format: ImageManipulator.SaveFormat.JPEG });
+      finish({ uri: out.uri });
+    } catch {
+      finish({ uri: shot.uri });
+    } finally {
+      setWorking(false);
+    }
+  }
 
   function finish(r: SnapResult) {
     setShot(null);
@@ -39,9 +131,7 @@ export default function SnapCamera({ visible, accent, onDone }: { visible: boole
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={() => (shot ? setShot(null) : finish(null))} statusBarTranslucent>
       <View style={st.root}>
-        {shot ? (
-          <Image source={{ uri: shot }} style={StyleSheet.absoluteFill} resizeMode="contain" />
-        ) : (
+        {shot ? null : (
           visible && (
             <CameraView
               ref={cam}
@@ -59,7 +149,7 @@ export default function SnapCamera({ visible, accent, onDone }: { visible: boole
             <Pressable style={st.round} onPress={() => (shot ? setShot(null) : finish(null))} hitSlop={10} accessibilityLabel="Close">
               <Ionicons name={shot ? 'arrow-back' : 'close'} size={24} color="#fff" />
             </Pressable>
-            <Text style={st.title}>{shot ? 'Looks sharp?' : 'Snap a page'}</Text>
+            <Text style={st.title}>{shot ? 'Crop to your notes' : 'Snap a page'}</Text>
             {shot ? (
               <View style={{ width: 44 }} />
             ) : (
@@ -68,6 +158,37 @@ export default function SnapCamera({ visible, accent, onDone }: { visible: boole
               </Pressable>
             )}
           </View>
+
+          {shot && (
+            <View style={st.cropArea} onLayout={(e) => setArea({ w: e.nativeEvent.layout.width, h: e.nativeEvent.layout.height })}>
+              {fit && (
+                <View style={{ position: 'absolute', left: fit.x, top: fit.y, width: fit.w, height: fit.h }}>
+                  <Image source={{ uri: shot.uri }} style={StyleSheet.absoluteFill} resizeMode="stretch" />
+                  {box && (
+                    <>
+                      <View pointerEvents="none" style={[st.shade, { left: 0, top: 0, right: 0, height: box.y }]} />
+                      <View pointerEvents="none" style={[st.shade, { left: 0, top: box.y + box.h, right: 0, bottom: 0 }]} />
+                      <View pointerEvents="none" style={[st.shade, { left: 0, top: box.y, width: box.x, height: box.h }]} />
+                      <View pointerEvents="none" style={[st.shade, { left: box.x + box.w, top: box.y, right: 0, height: box.h }]} />
+                      <View {...handles.move.panHandlers} style={[st.cropBox, { left: box.x, top: box.y, width: box.w, height: box.h, borderColor: accent }]}>
+                        <View pointerEvents="none" style={[st.grid, { left: '33.3%', top: 0, bottom: 0, width: 1 }]} />
+                        <View pointerEvents="none" style={[st.grid, { left: '66.6%', top: 0, bottom: 0, width: 1 }]} />
+                        <View pointerEvents="none" style={[st.grid, { top: '33.3%', left: 0, right: 0, height: 1 }]} />
+                        <View pointerEvents="none" style={[st.grid, { top: '66.6%', left: 0, right: 0, height: 1 }]} />
+                      </View>
+                      {(['tl', 'tr', 'bl', 'br'] as const).map((k) => (
+                        <View
+                          key={k}
+                          {...handles[k].panHandlers}
+                          style={[st.knob, { borderColor: accent, left: (k[1] === 'l' ? box.x : box.x + box.w) - 14, top: (k[0] === 't' ? box.y : box.y + box.h) - 14 }]}
+                        />
+                      ))}
+                    </>
+                  )}
+                </View>
+              )}
+            </View>
+          )}
 
           {!shot && (
             <View style={st.frameWrap} pointerEvents="none">
@@ -87,14 +208,14 @@ export default function SnapCamera({ visible, accent, onDone }: { visible: boole
                 <Ionicons name="refresh" size={20} color="#fff" />
                 <Text style={st.pillText}>Retake</Text>
               </Pressable>
-              <Pressable style={[st.pill, { backgroundColor: accent }]} onPress={() => finish({ uri: shot })}>
-                <Ionicons name="checkmark" size={22} color="#fff" />
+              <Pressable style={[st.pill, { backgroundColor: accent }, working && { opacity: 0.6 }]} onPress={useCropped} disabled={working}>
+                {working ? <ActivityIndicator color="#fff" /> : <Ionicons name="checkmark" size={22} color="#fff" />}
                 <Text style={st.pillText}>Read it</Text>
               </Pressable>
             </View>
           ) : (
             <View style={st.bottom}>
-              <Pressable style={st.side} onPress={() => finish('gallery')} accessibilityLabel="Choose from gallery">
+              <Pressable style={st.side} onPress={pickGallery} accessibilityLabel="Choose from gallery">
                 <Ionicons name="images-outline" size={26} color="#fff" />
                 <Text style={st.sideText}>Gallery</Text>
               </Pressable>
@@ -112,6 +233,11 @@ export default function SnapCamera({ visible, accent, onDone }: { visible: boole
 
 const st = StyleSheet.create({
   root: { flex: 1, backgroundColor: '#000' },
+  cropArea: { flex: 1, marginVertical: 16, marginHorizontal: 16 },
+  shade: { position: 'absolute', backgroundColor: 'rgba(0,0,0,0.55)' },
+  cropBox: { position: 'absolute', borderWidth: 2 },
+  grid: { position: 'absolute', backgroundColor: 'rgba(255,255,255,0.35)' },
+  knob: { position: 'absolute', width: 28, height: 28, borderRadius: 14, backgroundColor: '#fff', borderWidth: 3 },
   overlay: { flex: 1, justifyContent: 'space-between' },
   top: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingTop: 8 },
   title: { color: '#fff', fontSize: 17, fontWeight: '800', letterSpacing: 0.3 },
