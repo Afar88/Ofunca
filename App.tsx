@@ -120,9 +120,11 @@ const BUILT_WITH: [string, string][] = [
 
 // Developer card. Every link opens outside the app; nothing is sent automatically.
 const DEV: { name: string; links: { icon: string; label: string; hint?: string; url: string }[] } = {
-  name: 'Avie (Momobu Destiny)',
+  name: 'Avie',
   links: [
     { icon: '✉️', label: 'Email', hint: 'destinymomobu@gmail.com', url: 'mailto:destinymomobu@gmail.com?subject=Ofunca%20feedback' },
+    { icon: '💬', label: 'WhatsApp', hint: '+234 704 017 5686', url: 'https://wa.me/2347040175686?text=Hi%20Avie%2C%20about%20Ofunca%3A%20' },
+    { icon: '𝕏', label: 'X (Twitter)', hint: '@AVIEHUB', url: 'https://x.com/AVIEHUB' },
     { icon: '🐙', label: 'GitHub', hint: 'Afar88', url: 'https://github.com/Afar88' },
   ],
 };
