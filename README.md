@@ -25,7 +25,7 @@ Students in places with expensive or unreliable data, like much of Nigeria where
 | **Review my mistakes** | Wrong answers are saved (up to 60) and replayed in a shuffled review round; get one right and it leaves the list |
 | **History** | Ask and Quiz history survive app restarts |
 | **Menu** | Left drawer (two-line button, top left): Study Stash, guide, theme and speed, clear data, privacy, Built with, developer contact |
-| **Report a problem** | Users type the issue and send it by **SMS, so no internet data is needed**, or by WhatsApp or email when online. App version and Android version are added automatically |
+| **Report a problem** | Users type the issue and send it by **SMS, so no internet data is needed**, or by WhatsApp or email when online. App version, Android version and the app's last error are added automatically; 300-character cap keeps it to about two SMS |
 | **Offline indicator** | The header shows when the phone has no connection; everything still works |
 
 ## How it uses QVAC
