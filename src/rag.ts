@@ -211,3 +211,33 @@ export function cleanAnswer(text: string): string {
     .replace(/[ \t]{2,}/g, ' ')
     .trim();
 }
+
+/**
+ * Splits a message that asks several things ("What is osmosis? And what is inflation?")
+ * into separate questions, so each one is searched and answered from its own notes.
+ */
+export function splitQuestions(text: string, max = 3): string[] {
+  const t = text.replace(/\s+/g, ' ').trim();
+  if (!t) return [];
+  // 1) Numbered or bulleted lists: "1. ... 2) ... - ..."
+  let parts = t.split(/\s*(?:^|\s)(?:\d+[.)]|[-•])\s+/).map((s) => s.trim()).filter(Boolean);
+  // 2) Several question marks.
+  if (parts.length < 2) parts = (t.match(/[^?]+\?/g) ?? []).map((s) => s.trim());
+  const tail = t.replace(/[^?]*\?/g, '').trim();
+  if (parts.length >= 2 && tail.length > 3 && !/^\d/.test(tail)) parts.push(tail);
+  // 3) "... and what/how/why ..." joining two questions in one sentence.
+  if (parts.length < 2) {
+    parts = t.split(/\s*(?:,|;)?\s+(?:and|also|then)\s+(?=(?:what|how|why|who|whom|when|where|which|define|explain|describe|list|state|name|give)\b)/i);
+  }
+  const clean = parts
+    .map((s) => s.replace(/^(?:and|also|then)\s+/i, '').trim())
+    .filter((s) => s.replace(/[^a-z0-9]/gi, '').length >= 4);
+  return clean.length >= 2 ? clean.slice(0, max) : [t];
+}
+
+/** Keeps the passages from the single note that best answers the question, so notes never blend. */
+export function bestDocHits(hits: Hit[], max = 3): Hit[] {
+  if (!hits.length) return hits;
+  const doc = hits[0].chunk.docId;
+  return focusHits(hits.filter((h) => h.chunk.docId === doc), max);
+}

@@ -62,8 +62,7 @@ import {
   parseOneQuestion,
   pickQuizExcerpts,
   search,
-  type Hit,
-} from './src/rag';
+  type Hit, splitQuestions, bestDocHits } from './src/rag';
 import { SAMPLE_NOTES, SAMPLE_TITLE } from './src/sample';
 
 type Tab = 'notes' | 'ask' | 'quiz';
@@ -451,39 +450,52 @@ function Main() {
     const t0 = Date.now();
     await guarded('Searching your notes…', async () => {
       setQas((prev) => [...prev, { id, question: q, answer: '', hits: [], done: false }]);
-      const qv = await embedQuery(q);
-      let hits = search(qv, q, chunksIn(scopeValid), docNames, 8);
-      // Never mix subjects: in Auto mode, answer only from the subject of the best-matching passage.
-      const subject = scopeValid === AUTO ? subjectByDoc[hits[0]?.chunk.docId] : scopeValid;
-      hits = focusHits(hits.filter((h) => subjectByDoc[h.chunk.docId] === subject), 3);
-      setQas((prev) => prev.map((x) => (x.id === id ? { ...x, hits, subject } : x)));
-      const best = hits[0]?.score ?? 0;
-      let answer: string;
-      if (best < 0.22) { // off-topic questions score ~0.18 with EmbeddingGemma; on-topic ≥0.3
-        answer = NOT_FOUND;
-        setQas((prev) => prev.map((x) => (x.id === id ? { ...x, answer } : x)));
-      } else {
-        setBusy(null);
-        setGenerating(true);
-        try {
-          answer = cleanAnswer(
-            await generate(
-              buildAnswerPrompt(q, hits),
-              (txt) => setQas((prev) => prev.map((x) => (x.id === id ? { ...x, answer: cleanAnswer(txt) } : x))),
-              { maxTokens: 220 },
-            ),
-          );
-        } finally {
-          setGenerating(false);
+      // Each question in the message gets its own search, subject and note, so answers never mix.
+      const parts = splitQuestions(q);
+      const multi = parts.length > 1;
+      const done: string[] = [];
+      const allHits: Hit[] = [];
+      const subs: string[] = [];
+      const show = (cur = '') => {
+        const list = cur ? [...done, cur] : done;
+        return multi ? list.map((a, i) => `${i + 1}. ${a}`).join('\n\n') : list[0] ?? '';
+      };
+      for (const part of parts) {
+        const qv = await embedQuery(part);
+        let hits = search(qv, part, chunksIn(scopeValid), docNames, 8);
+        const subject = scopeValid === AUTO ? subjectByDoc[hits[0]?.chunk.docId] : scopeValid;
+        hits = bestDocHits(hits.filter((h) => subjectByDoc[h.chunk.docId] === subject), 3);
+        const best = hits[0]?.score ?? 0;
+        let answer: string;
+        if (best < 0.22) { // off-topic questions score ~0.18 with EmbeddingGemma; on-topic ≥0.3
+          answer = NOT_FOUND;
+        } else {
+          setBusy(null);
+          setGenerating(true);
+          try {
+            answer = cleanAnswer(
+              await generate(
+                buildAnswerPrompt(part, hits),
+                (txt) => setQas((prev) => prev.map((x) => (x.id === id ? { ...x, answer: show(cleanAnswer(txt)) } : x))),
+                { maxTokens: multi ? 140 : 220 },
+              ),
+            );
+          } finally {
+            setGenerating(false);
+          }
+          if (answer.replace(/[^a-z0-9]/gi, '').length < 3) {
+            answer = `From your notes: “${hits[0]?.chunk.text.slice(0, 300) ?? ''}”`;
+          }
         }
+        if (!answer.toLowerCase().includes("couldn't find that in your notes")) {
+          allHits.push(...hits);
+          if (subject && !subs.includes(subject)) subs.push(subject);
+        }
+        done.push(answer || NOT_FOUND);
+        setQas((prev) => prev.map((x) => (x.id === id ? { ...x, answer: show(), hits: allHits.slice(), subject: subs.join(' · ') || undefined } : x)));
       }
-      if (answer.replace(/[^a-z0-9]/gi, '').length < 3) {
-        // Rare empty reply from the small model: fall back to the best passage, clearly labelled.
-        answer = `Here is the most relevant part of your notes [1]:\n“${hits[0]?.chunk.text.slice(0, 400) ?? ''}”`;
-      }
-      const notFound = answer.toLowerCase().includes("couldn't find that in your notes");
       setQas((prev) =>
-        prev.map((x) => (x.id === id ? { ...x, answer: answer || NOT_FOUND, hits: notFound ? [] : hits, done: true, ms: Date.now() - t0 } : x)),
+        prev.map((x) => (x.id === id ? { ...x, answer: show() || NOT_FOUND, hits: allHits, subject: subs.join(' · ') || undefined, done: true, ms: Date.now() - t0 } : x)),
       );
     }, 'llm');
     setQas((prev) => prev.map((x) => (x.id === id ? { ...x, done: true } : x)));
@@ -1124,7 +1136,7 @@ const QACard = memo(function QACard({
   onShorter?: (qa: QA) => void;
   onReply?: (qa: QA) => void;
 }) {
-  const answered = qa.done && qa.answer && qa.answer !== NOT_FOUND && qa.hits.length > 0;
+  const answered = qa.done && !!qa.answer && qa.answer !== NOT_FOUND && qa.hits.length > 0;
   const [showSrc, setShowSrc] = useState(false);
   return (
     <Pressable style={{ marginBottom: 14 }} onLongPress={() => qa.done && onLongPress?.(qa.id)} delayLongPress={450}>
@@ -1165,7 +1177,14 @@ const QACard = memo(function QACard({
           </View>
         ) : null}
         {answered && showSrc && (
-          <SourceCard n={1} docName={qa.hits[0].docName} page={qa.hits[0].chunk.page} text={qa.hits[0].chunk.text} />
+          <>
+            {qa.hits
+              .filter((h, i, a) => a.findIndex((x) => x.chunk.docId === h.chunk.docId) === i)
+              .slice(0, 3)
+              .map((h, i) => (
+                <SourceCard key={h.chunk.docId + i} n={i + 1} docName={h.docName} page={h.chunk.page} text={h.chunk.text} />
+              ))}
+          </>
         )}
       </View>
     </Pressable>
