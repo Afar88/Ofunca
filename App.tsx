@@ -108,6 +108,43 @@ async function saveSettings(patch: Settings) {
   await FS.writeAsStringAsync(SETTINGS_FILE, JSON.stringify({ ...cur, ...patch })).catch(() => {});
 }
 
+const APP_VERSION: string = require('./app.json').expo.version;
+
+const BUILT_WITH: [string, string][] = [
+  ['Tether QVAC SDK', 'runs every AI model on the phone'],
+  ['Llama 3.2 1B Instruct', 'the tutor that answers and writes quizzes'],
+  ['EmbeddingGemma 300M', 'finds the right part of your notes'],
+  ['QVAC OCR', 'reads photos of handwritten and printed notes'],
+  ['Expo + React Native', 'the app itself'],
+];
+
+// Developer card. Every link opens outside the app; nothing is sent automatically.
+const DEV: { name: string; links: { icon: string; label: string; hint?: string; url: string }[] } = {
+  name: 'Avie (Momobu Destiny)',
+  links: [
+    { icon: '✉️', label: 'Email', hint: 'destinymomobu@gmail.com', url: 'mailto:destinymomobu@gmail.com?subject=Ofunca%20feedback' },
+    { icon: '🐙', label: 'GitHub', hint: 'Afar88', url: 'https://github.com/Afar88' },
+  ],
+};
+
+function MenuRow(p: { C: any; icon: string; label: string; hint?: string; onPress: () => void; danger?: boolean; disabled?: boolean; last?: boolean }) {
+  return (
+    <Pressable
+      onPress={p.onPress}
+      disabled={p.disabled}
+      style={({ pressed }) => [
+        { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, gap: 10, opacity: p.disabled ? 0.4 : pressed ? 0.6 : 1 },
+        !p.last && { borderBottomWidth: 1, borderBottomColor: p.C.border },
+      ]}
+    >
+      <Text style={{ fontSize: 18, width: 26, textAlign: 'center' }}>{p.icon}</Text>
+      <Text style={{ flex: 1, color: p.danger ? p.C.danger : p.C.text, fontSize: 15, fontWeight: '700' }}>{p.label}</Text>
+      {p.hint ? <Text style={{ color: p.C.muted, fontSize: 12, maxWidth: 170 }} numberOfLines={1}>{p.hint}</Text> : null}
+      <Text style={{ color: p.C.muted, fontSize: 18 }}>›</Text>
+    </Pressable>
+  );
+}
+
 export default function App() {
   const [intro, setIntro] = useState(true);
   return (
@@ -134,6 +171,7 @@ function Main() {
     saveSettings({ hideGuide: v });
   };
   const [menu, setMenu] = useState(false);
+  const [aboutOpen, setAboutOpen] = useState<null | 'privacy' | 'built'>(null);
   const [stash, setStash] = useState(false);
   const dark = themePref === 'dark' || (themePref === 'system' && sys === 'dark');
   const themeKey = dark ? 'dark' : 'light';
@@ -783,7 +821,11 @@ function Main() {
           </View>
         )}
         <Pressable onPress={() => setMenu(true)} hitSlop={12} style={s.moreBtn} accessibilityLabel="More options">
-          <Text style={s.moreText}>⋯</Text>
+          <View style={s.dots}>
+            <View style={s.dot} />
+            <View style={s.dot} />
+            <View style={s.dot} />
+          </View>
         </Pressable>
       </View>
 
@@ -1136,46 +1178,47 @@ function Main() {
       <Modal visible={menu} transparent animationType="fade" onRequestClose={() => setMenu(false)}>
         <Pressable style={s.scrim} onPress={() => setMenu(false)}>
           <Pressable style={s.sheet} onPress={() => {}}>
-            <ScrollView style={{ maxHeight: 520 }}>
-              <Text style={s.h2}>More options</Text>
-              <View style={s.segment}>
-                <Text style={[s.small, { marginRight: 8 }]}>Theme:</Text>
-                {(['system', 'light', 'dark'] as ThemePref[]).map((t) => (
-                  <Pressable key={t} onPress={() => chooseTheme(t)} style={[s.segBtn, themePref === t && s.segBtnOn]}>
-                    <Text style={[s.segText, themePref === t && s.segTextOn]}>{t === 'system' ? 'Auto' : t === 'light' ? '☀ Light' : '☾ Dark'}</Text>
-                  </Pressable>
-                ))}
+            <ScrollView style={{ maxHeight: 560 }}>
+              <Text style={s.h2}>Menu</Text>
+
+              <Text style={s.menuHead}>📚 STUDY</Text>
+              <View style={s.menuGroup}>
+                <MenuRow C={C} icon="📚" label="My Study Stash" hint={`${docs.length} note${docs.length === 1 ? '' : 's'}`} onPress={() => { setMenu(false); setStash(true); }} />
+                <MenuRow C={C} icon="📖" label={`${hideGuide ? 'Show' : 'Hide'} “How Ofunca works”`} onPress={() => { setHideGuide(!hideGuide); setMenu(false); setTab('notes'); }} last />
               </View>
-              <View style={s.segment}>
-                <Text style={[s.small, { marginRight: 8 }]}>Compute:</Text>
-                {(['cpu', 'gpu'] as Device[]).map((d) => (
-                  <Pressable key={d} onPress={() => { setMenu(false); switchDevice(d); }} style={[s.segBtn, device === d && s.segBtnOn]}>
-                    <Text style={[s.segText, device === d && s.segTextOn]}>{d.toUpperCase()}</Text>
-                  </Pressable>
-                ))}
+
+              <Text style={s.menuHead}>🎨 LOOK & SPEED</Text>
+              <View style={s.menuGroup}>
+                <View style={s.segment}>
+                  <Text style={[s.small, { width: 74 }]}>Theme</Text>
+                  {(['system', 'light', 'dark'] as ThemePref[]).map((t) => (
+                    <Pressable key={t} onPress={() => chooseTheme(t)} style={[s.segBtn, themePref === t && s.segBtnOn]}>
+                      <Text style={[s.segText, themePref === t && s.segTextOn]}>{t === 'system' ? 'Auto' : t === 'light' ? '☀ Light' : '☾ Dark'}</Text>
+                    </Pressable>
+                  ))}
+                </View>
+                <View style={s.segment}>
+                  <Text style={[s.small, { width: 74 }]}>AI runs on</Text>
+                  {(['cpu', 'gpu'] as Device[]).map((d) => (
+                    <Pressable key={d} onPress={() => { setMenu(false); switchDevice(d); }} style={[s.segBtn, device === d && s.segBtnOn]}>
+                      <Text style={[s.segText, device === d && s.segTextOn]}>{d.toUpperCase()}</Text>
+                    </Pressable>
+                  ))}
+                </View>
+                <Text style={[s.small, { marginTop: 2 }]}>Answers feel slow? Try GPU.</Text>
               </View>
-              <Pressable style={s.menuItem} onPress={() => { setMenu(false); setStash(true); }}>
-                <Text style={s.menuText}>📚 My Study Stash ({docs.length} note{docs.length === 1 ? '' : 's'})</Text>
-              </Pressable>
-              <Pressable style={s.menuItem} onPress={() => { setHideGuide(!hideGuide); setMenu(false); setTab('notes'); }}>
-                <Text style={s.menuText}>📖 {hideGuide ? 'Show' : 'Hide'} “How Ofunca works” guide</Text>
-              </Pressable>
-              <Pressable style={s.menuItem} onPress={() => { setMenu(false); checkForUpdate(true); }}>
-                <Text style={s.menuText}>🔄 Check for updates</Text>
-              </Pressable>
-              {qas.length > 0 && (
-                <Pressable style={s.menuItem} onPress={() => { setMenu(false); confirmClear('chat'); }}>
-                  <Text style={s.menuText}>💬 Clear all Ask questions</Text>
-                </Pressable>
-              )}
-              {quiz.length > 0 && (
-                <Pressable style={s.menuItem} onPress={() => { setMenu(false); confirmClear('quiz'); }}>
-                  <Text style={s.menuText}>🧠 Clear quiz</Text>
-                </Pressable>
-              )}
-              {docs.length > 0 && (
-                <Pressable
-                  style={s.menuItem}
+
+              <Text style={s.menuHead}>🧹 MY DATA</Text>
+              <View style={s.menuGroup}>
+                <MenuRow C={C} icon="💬" label="Clear Ask history" disabled={!qas.length} onPress={() => { setMenu(false); confirmClear('chat'); }} />
+                <MenuRow C={C} icon="🧠" label="Clear quiz" disabled={!quiz.length} onPress={() => { setMenu(false); confirmClear('quiz'); }} />
+                <MenuRow
+                  C={C}
+                  icon="🗑"
+                  label="Delete all notes"
+                  danger
+                  last
+                  disabled={!docs.length}
                   onPress={() => {
                     setMenu(false);
                     Alert.alert('Delete all notes?', 'This removes every imported note from this phone.', [
@@ -1183,15 +1226,38 @@ function Main() {
                       { text: 'Delete all', style: 'destructive', onPress: async () => { await clearAll(); await refreshLibrary(); setQas([]); setQuiz([]); } },
                     ]);
                   }}
-                >
-                  <Text style={[s.menuText, { color: C.danger }]}>🗑 Delete all notes</Text>
-                </Pressable>
-              )}
-              <Text style={[s.h3, { marginTop: 16 }]}>Privacy & offline</Text>
-              <Text style={s.small}>
-                Notes, embeddings and answers never leave this phone. The models ({MODELS.map((m) => m.label).join(', ')} and QVAC OCR) run locally through
-                Tether's QVAC SDK. Internet is only used once, to download the models. If answers feel slow, try GPU.
-              </Text>
+                />
+              </View>
+
+              <Text style={s.menuHead}>ℹ️ ABOUT</Text>
+              <View style={s.menuGroup}>
+                <MenuRow C={C} icon="🔄" label="Check for updates" hint={`v${APP_VERSION}`} onPress={() => { setMenu(false); checkForUpdate(true); }} />
+                <MenuRow C={C} icon="🔒" label="Privacy & offline" onPress={() => setAboutOpen(aboutOpen === 'privacy' ? null : 'privacy')} />
+                {aboutOpen === 'privacy' && (
+                  <Text style={[s.small, s.menuNote]}>
+                    Your notes, searches and answers never leave this phone. Internet is used only once, to download the AI models. After that Ofunca works in airplane mode.
+                  </Text>
+                )}
+                <MenuRow C={C} icon="🛠" label="Built with" onPress={() => setAboutOpen(aboutOpen === 'built' ? null : 'built')} last={aboutOpen !== 'built'} />
+                {aboutOpen === 'built' && (
+                  <View style={s.menuNote}>
+                    {BUILT_WITH.map(([k, v]) => (
+                      <Text key={k} style={s.small}>
+                        <Text style={{ fontWeight: '800', color: C.text }}>{k}</Text> · {v}
+                      </Text>
+                    ))}
+                  </View>
+                )}
+              </View>
+
+              <Text style={s.menuHead}>👋 DEVELOPER</Text>
+              <View style={s.menuGroup}>
+                <Text style={[s.menuText, { marginBottom: 2 }]}>{DEV.name}</Text>
+                <Text style={[s.small, { marginBottom: 8 }]}>Made Ofunca for students who study without steady internet. Feedback welcome!</Text>
+                {DEV.links.map((l, i) => (
+                  <MenuRow C={C} key={l.url} icon={l.icon} label={l.label} hint={l.hint} onPress={() => Linking.openURL(l.url).catch(() => {})} last={i === DEV.links.length - 1} />
+                ))}
+              </View>
             </ScrollView>
             <Pressable style={s.btn} onPress={() => setMenu(false)}>
               <Text style={s.btnText}>Close</Text>
@@ -1485,6 +1551,12 @@ const makeStyles = () => StyleSheet.create({
   stashArrow: { color: C.primary, fontSize: 30, fontWeight: '900' },
   moreBtn: { marginLeft: 8, width: 36, height: 36, borderRadius: 18, backgroundColor: 'rgba(255,255,255,0.22)', alignItems: 'center', justifyContent: 'center' },
   moreText: { color: '#fff', fontSize: 22, fontWeight: '900', marginTop: -4 },
+  dots: { alignItems: 'center', justifyContent: 'center', gap: 3 },
+  dot: { width: 4.5, height: 4.5, borderRadius: 3, backgroundColor: '#fff' },
+  menuHead: { color: C.muted, fontSize: 12, fontWeight: '900', letterSpacing: 1, marginTop: 16, marginBottom: 6 },
+  menuGroup: { backgroundColor: C.bg, borderRadius: 16, paddingHorizontal: 12, paddingVertical: 4, borderWidth: 1, borderColor: C.border },
+  menuNote: { paddingBottom: 10, gap: 3 },
+  menuRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, gap: 10 },
   menuItem: { paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: C.border },
   menuText: { color: C.text, fontSize: 16, fontWeight: '700' },
   btnGhost: { borderWidth: 2, borderColor: C.primary, borderBottomWidth: 4, borderRadius: 22, paddingVertical: 11, alignItems: 'center', marginTop: 12, backgroundColor: C.card },
