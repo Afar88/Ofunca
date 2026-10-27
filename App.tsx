@@ -575,7 +575,7 @@ function Main() {
         <StatusBar style="light" />
         <ScrollView contentContainerStyle={s.setup}>
           <BrandMark />
-          <Text style={s.title}>Study Tutor</Text>
+          <Text style={s.title}>Ofunca</Text>
           <Text style={s.tagline}>Your notes. Your tutor. No signal needed.</Text>
           <Text style={s.sub}>Ask your class notes anything and get answers straight from them, with the AI running entirely on your phone.</Text>
           {phase === 'needDownload' || phase === 'downloading' ? (
@@ -671,7 +671,7 @@ function Main() {
       <StatusBar style="light" />
       <View style={[s.header, { paddingTop: insets.top + 12 }]}>
         <View style={{ flex: 1 }}>
-          <Text style={s.headerTitle}>Study Tutor</Text>
+          <Text style={s.headerTitle}>Ofunca</Text>
           <Text style={[s.small, { color: 'rgba(255,255,255,0.8)', fontWeight: '700' }]}>
             {subjects.length} subject{subjects.length === 1 ? '' : 's'} · {docs.length} note{docs.length === 1 ? '' : 's'} · {device.toUpperCase()}
           </Text>

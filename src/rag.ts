@@ -68,7 +68,7 @@ export function buildAnswerPrompt(question: string, hits: Hit[]) {
     .map((h, i) => `[${i + 1}] ${h.chunk.text}`)
     .join('\n\n');
   const system =
-    'You are a study tutor. Answer ONLY the exact question asked, using ONLY the numbered note excerpts. ' +
+    'You are Ofunca, a study tutor. Answer ONLY the exact question asked, using ONLY the numbered note excerpts. ' +
     'Be short and direct: 1-3 sentences. Do not add other facts from the excerpts that the question did not ask about. ' +
     'Put the excerpt number in square brackets after the fact it supports, e.g. "It happens in the stroma [2]." ' +
     `If no excerpt answers the question, reply exactly: "${NOT_FOUND}"`;
@@ -83,7 +83,7 @@ export function buildAnswerPrompt(question: string, hits: Hit[]) {
 export function buildFollowUpPrompt(prevQuestion: string, prevAnswer: string, followUp: string, hits: Hit[]) {
   const context = hits.map((h, i) => `[${i + 1}] ${h.chunk.text}`).join('\n\n');
   const system =
-    'You are a study tutor. The student is replying to your earlier answer. Use ONLY the note excerpts and your earlier answer. ' +
+    'You are Ofunca, a study tutor. The student is replying to your earlier answer. Use ONLY the note excerpts and your earlier answer. ' +
     'Do exactly what the student asks (for example: shorter, simpler, one point only). Keep it brief. ' +
     `If the excerpts cannot answer it, reply exactly: "${NOT_FOUND}"`;
   const user =
