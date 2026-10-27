@@ -10,6 +10,7 @@
     "pdf-html": "node scripts/build-pdf-html.js"
   },
   "dependencies": {
+    "@expo/vector-icons": "^15.0.3",
     "@qvac/fabric-android-arm64": "0.22.0",
     "@qvac/fabric-ios": "0.22.0",
     "@qvac/sdk": "0.22.0",

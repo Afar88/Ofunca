@@ -58,6 +58,7 @@ import { friendlyError, type DlState, type ModelKey } from './src/modelDownload'
 import { ocrCached, recognise, releaseOcr, type OcrResult } from './src/ocr';
 import { installBundledOcr, unloadLlm, reloadLlm } from './src/qvac';
 import { checkForUpdate } from './src/update';
+import { Ionicons } from '@expo/vector-icons';
 import { Intro } from './src/Intro';
 import { Confetti } from './src/Confetti';
 import {
@@ -156,10 +157,10 @@ const BUILT_WITH: [string, string][] = [
 const DEV: { name: string; links: { icon: string; label: string; hint?: string; url: string }[] } = {
   name: 'Avie',
   links: [
-    { icon: '✉️', label: 'Email', hint: 'destinymomobu@gmail.com', url: 'mailto:destinymomobu@gmail.com?subject=Ofunca%20feedback' },
-    { icon: '💬', label: 'WhatsApp', hint: '+234 704 017 5686', url: 'https://wa.me/2347040175686?text=Hi%20Avie%2C%20about%20Ofunca%3A%20' },
-    { icon: '𝕏', label: 'X (Twitter)', hint: '@AVIEHUB', url: 'https://x.com/AVIEHUB' },
-    { icon: '🐙', label: 'GitHub', hint: 'Afar88', url: 'https://github.com/Afar88' },
+    { icon: 'mail-outline', label: 'Email', hint: 'destinymomobu@gmail.com', url: 'mailto:destinymomobu@gmail.com?subject=Ofunca%20feedback' },
+    { icon: 'logo-whatsapp', label: 'WhatsApp', hint: '+234 704 017 5686', url: 'https://wa.me/2347040175686?text=Hi%20Avie%2C%20about%20Ofunca%3A%20' },
+    { icon: 'logo-x', label: 'X (Twitter)', hint: '@AVIEHUB', url: 'https://x.com/AVIEHUB' },
+    { icon: 'logo-github', label: 'GitHub', hint: 'Afar88', url: 'https://github.com/Afar88' },
   ],
 };
 
@@ -208,10 +209,10 @@ function MenuRow(p: { C: any; icon: string; label: string; hint?: string; onPres
         !p.last && { borderBottomWidth: 1, borderBottomColor: p.C.border },
       ]}
     >
-      <Text style={{ fontSize: 18, width: 26, textAlign: 'center' }}>{p.icon}</Text>
+      <Ionicons name={p.icon as any} size={20} color={p.danger ? p.C.danger : p.C.primary} style={{ width: 26, textAlign: 'center' }} />
       <Text style={{ flex: 1, color: p.danger ? p.C.danger : p.C.text, fontSize: 15, fontWeight: '700' }}>{p.label}</Text>
       {p.hint ? <Text style={{ color: p.C.muted, fontSize: 12, maxWidth: 170 }} numberOfLines={1}>{p.hint}</Text> : null}
-      <Text style={{ color: p.C.muted, fontSize: 18 }}>›</Text>
+      <Ionicons name="chevron-forward" size={16} color={p.C.muted} />
     </Pressable>
   );
 }
@@ -548,8 +549,8 @@ function Main() {
     const source = await new Promise<'camera' | 'gallery' | null>((resolve) =>
       Alert.alert('Snap notes', 'Take a new photo or pick one you already have.', [
         { text: 'Cancel', style: 'cancel', onPress: () => resolve(null) },
-        { text: '🖼 Gallery', onPress: () => resolve('gallery') },
-        { text: '📷 Camera', onPress: () => resolve('camera') },
+        { text: 'Gallery', onPress: () => resolve('gallery') },
+        { text: 'Camera', onPress: () => resolve('camera') },
       ], { cancelable: true, onDismiss: () => resolve(null) }),
     );
     if (!source) return;
@@ -986,9 +987,9 @@ function Main() {
         {tab === 'notes' && (
           <ScrollView contentContainerStyle={s.pad}>
             <View style={s.actions}>
-              <ActionBtn icon="📄" label="Import PDF / text" active={busy ? lastAction === 'import' : false} onPress={() => act('import', importFile)} />
-              <ActionBtn icon="📷" label="Snap notes" active={busy ? lastAction === 'snap' : false} onPress={() => act('snap', snapNotes)} />
-              <ActionBtn icon="📋" label="Paste text" onPress={() => act('paste', async () => openEditor({ mode: 'paste', title: '', text: '', subject: subjects[0] ?? '' }))} />
+              <ActionBtn icon="document-text-outline" label="Import PDF / text" active={busy ? lastAction === 'import' : false} onPress={() => act('import', importFile)} />
+              <ActionBtn icon="camera-outline" label="Snap notes" active={busy ? lastAction === 'snap' : false} onPress={() => act('snap', snapNotes)} />
+              <ActionBtn icon="clipboard-outline" label="Paste text" onPress={() => act('paste', async () => openEditor({ mode: 'paste', title: '', text: '', subject: subjects[0] ?? '' }))} />
             </View>
             {!hideGuide && (
               <View style={s.card}>
@@ -999,9 +1000,9 @@ function Main() {
                   </Pressable>
                 </View>
                 {[
-                  ['1', '📚 Add your notes', 'Import a PDF, snap a photo of your notebook or handout, or paste text. Put each one under a subject.'],
-                  ['2', '💬 Ask anything', 'Type your question, even two or three at once. Answers come only from your notes, with “Where from?” showing the exact part.'],
-                  ['3', '🧠 Quiz yourself', 'Pick a subject or mix them all, choose 5 to 20 questions, tap A to D and see ✅ or ❌ with your score.'],
+                  ['1', 'Add your notes', 'Import a PDF, snap a photo of your notebook or handout, or paste text. Put each one under a subject.'],
+                  ['2', 'Ask anything', 'Type your question, even two or three at once. Answers come only from your notes, with “Where from?” showing the exact part.'],
+                  ['3', 'Quiz yourself', 'Pick a subject or mix them all, choose 5 to 20 questions, tap A to D and see right or wrong with your score.'],
                 ].map(([n, t, d]) => (
                   <View key={n} style={{ flexDirection: 'row', gap: 12, marginTop: 14 }}>
                     <View style={s.stepNum}>
@@ -1013,17 +1014,17 @@ function Main() {
                     </View>
                   </View>
                 ))}
-                <Text style={[s.small, { marginTop: 14 }]}>✈️ Everything runs and stays on this phone. No internet needed.</Text>
+                <Text style={[s.small, { marginTop: 14 }]}>Everything runs and stays on this phone. No internet needed.</Text>
               </View>
             )}
             {docs.length === 0 ? (
               <View style={s.card}>
                 <Text style={s.h2}>No notes yet</Text>
-                <Text style={s.small}>Tap 📄, 📷 or 📋 above to add your first notes.</Text>
+                <Text style={s.small}>Use Import, Snap or Paste above to add your first notes.</Text>
               </View>
             ) : (
               <Pressable style={s.stashTile} onPress={() => setStash(true)}>
-                <Text style={{ fontSize: 30 }}>📚</Text>
+                <Ionicons name="library" size={30} color={C.primary} />
                 <View style={{ flex: 1 }}>
                   <Text style={s.stashTitle}>My Study Stash</Text>
                   <Text style={s.small}>
@@ -1121,7 +1122,7 @@ function Main() {
             {subjects.length > 1 && (
               <>
                 <Text style={[s.small, { textAlign: 'center', marginBottom: 6 }]}>Quiz me on one subject, or mix them all:</Text>
-                <SubjectChips subjects={subjects} value={scopeValid} onChange={setScope} autoLabel="🔀 Mix all" inline />
+                <SubjectChips subjects={subjects} value={scopeValid} onChange={setScope} autoLabel="Mix all" inline />
               </>
             )}
             <View style={{ flexDirection: 'row', justifyContent: 'center', gap: 8, marginBottom: 10, alignItems: 'center' }}>
@@ -1144,11 +1145,11 @@ function Main() {
               </Text>
             )}
             <Pressable style={[s.btn, (!!busy || !chunks.length) && s.btnDisabled]} disabled={!!busy || !chunks.length} onPress={makeQuiz}>
-              <Text style={s.btnText}>{quiz.length ? '🔄 New quiz' : '🧠 Quiz me'}</Text>
+              <Text style={s.btnText}>{quiz.length ? 'New quiz' : 'Quiz me'}</Text>
             </Pressable>
             {mistakes.length > 0 && (
               <Pressable style={[s.btnGhost, !!busy && s.btnDisabled]} disabled={!!busy} onPress={startReview}>
-                <Text style={s.btnGhostText}>🔁 Review my mistakes ({mistakes.length})</Text>
+                <Text style={s.btnGhostText}>Review my mistakes ({mistakes.length})</Text>
               </Pressable>
             )}
             {reviewing && quiz.length > 0 && (
@@ -1228,13 +1229,13 @@ function Main() {
       <View style={s.tabs}>
         {(
           [
-            ['notes', '📚', 'Notes'],
-            ['ask', '💬', 'Ask'],
-            ['quiz', '🧠', 'Quiz'],
+            ['notes', 'library', 'Notes'],
+            ['ask', 'chatbubble-ellipses', 'Ask'],
+            ['quiz', 'school', 'Quiz'],
           ] as [Tab, string, string][]
         ).map(([k, icon, label]) => (
           <Pressable key={k} style={s.tab} onPress={() => setTab(k)}>
-            <Text style={[s.tabIcon, tab !== k && { opacity: 0.45 }]}>{icon}</Text>
+            <Ionicons name={(tab === k ? icon : `${icon}-outline`) as any} size={24} color={tab === k ? C.primary : C.muted} />
             <Text style={[s.tabLabel, tab === k && s.tabLabelOn]}>{label}</Text>
           </Pressable>
         ))}
@@ -1294,7 +1295,7 @@ function Main() {
       <Modal visible={stash} transparent animationType="slide" onRequestClose={() => setStash(false)}>
         <Pressable style={s.scrim} onPress={() => setStash(false)}>
           <Pressable style={s.sheet} onPress={() => {}}>
-            <Text style={s.h2}>📚 My Study Stash</Text>
+            <Text style={s.h2}>My Study Stash</Text>
             <Text style={s.small}>Tap a note to move it to another subject, ✕ to remove it.</Text>
             <ScrollView style={{ maxHeight: 480 }}>
               {docs.length === 0 ? <Text style={[s.small, { marginTop: 12 }]}>No notes yet.</Text> : (
@@ -1303,7 +1304,7 @@ function Main() {
                   <Text style={s.groupHead}>{sub}</Text>
                   {docs.filter((d) => subjectOf(d) === sub).map((d) => (
                     <Pressable key={d.id} style={s.docRow} onPress={() => moveDoc(d)}>
-                      <Text style={s.docIcon}>{d.kind === 'pdf' ? '📄' : d.kind === 'pasted' ? '📋' : '📝'}</Text>
+                      <Ionicons name={d.kind === 'pdf' ? 'document-outline' : d.kind === 'pasted' ? 'clipboard-outline' : 'camera-outline'} size={22} color={C.primary} style={{ width: 28 }} />
                       <View style={{ flex: 1 }}>
                         <Text style={s.docName} numberOfLines={2}>{d.name}</Text>
                         <Text style={s.small}>{d.chunkCount} passages · tap to change subject</Text>
@@ -1345,13 +1346,13 @@ function Main() {
                 </Pressable>
               </View>
 
-              <Text style={s.menuHead}>📚 STUDY</Text>
+              <Text style={s.menuHead}>Study</Text>
               <View style={s.menuGroup}>
-                <MenuRow C={C} icon="📚" label="My Study Stash" hint={`${docs.length} note${docs.length === 1 ? '' : 's'}`} onPress={() => { setMenu(false); setStash(true); }} />
-                <MenuRow C={C} icon="📖" label={`${hideGuide ? 'Show' : 'Hide'} “How Ofunca works”`} onPress={() => { setHideGuide(!hideGuide); setMenu(false); setTab('notes'); }} last />
+                <MenuRow C={C} icon="library-outline" label="My Study Stash" hint={`${docs.length} note${docs.length === 1 ? '' : 's'}`} onPress={() => { setMenu(false); setStash(true); }} />
+                <MenuRow C={C} icon="book-outline" label={`${hideGuide ? 'Show' : 'Hide'} “How Ofunca works”`} onPress={() => { setHideGuide(!hideGuide); setMenu(false); setTab('notes'); }} last />
               </View>
 
-              <Text style={s.menuHead}>🎨 LOOK & SPEED</Text>
+              <Text style={s.menuHead}>Look & speed</Text>
               <View style={s.menuGroup}>
                 <View style={s.segment}>
                   <Text style={[s.small, { width: 74 }]}>Theme</Text>
@@ -1372,13 +1373,13 @@ function Main() {
                 <Text style={[s.small, { marginTop: 2 }]}>Answers feel slow? Try GPU.</Text>
               </View>
 
-              <Text style={s.menuHead}>🧹 MY DATA</Text>
+              <Text style={s.menuHead}>My data</Text>
               <View style={s.menuGroup}>
-                <MenuRow C={C} icon="💬" label="Clear Ask history" disabled={!qas.length} onPress={() => { setMenu(false); confirmClear('chat'); }} />
-                <MenuRow C={C} icon="🧠" label="Clear quiz" disabled={!quiz.length} onPress={() => { setMenu(false); confirmClear('quiz'); }} />
+                <MenuRow C={C} icon="chatbubble-outline" label="Clear Ask history" disabled={!qas.length} onPress={() => { setMenu(false); confirmClear('chat'); }} />
+                <MenuRow C={C} icon="school-outline" label="Clear quiz" disabled={!quiz.length} onPress={() => { setMenu(false); confirmClear('quiz'); }} />
                 <MenuRow
                   C={C}
-                  icon="🗑"
+                  icon="trash-outline"
                   label="Delete all notes"
                   danger
                   last
@@ -1393,16 +1394,16 @@ function Main() {
                 />
               </View>
 
-              <Text style={s.menuHead}>ℹ️ ABOUT</Text>
+              <Text style={s.menuHead}>About</Text>
               <View style={s.menuGroup}>
-                <MenuRow C={C} icon="🔄" label="Check for updates" hint={`v${APP_VERSION}`} onPress={() => { setMenu(false); checkForUpdate(true); }} />
-                <MenuRow C={C} icon="🔒" label="Privacy & offline" onPress={() => setAboutOpen(aboutOpen === 'privacy' ? null : 'privacy')} />
+                <MenuRow C={C} icon="refresh-outline" label="Check for updates" hint={`v${APP_VERSION}`} onPress={() => { setMenu(false); checkForUpdate(true); }} />
+                <MenuRow C={C} icon="lock-closed-outline" label="Privacy & offline" onPress={() => setAboutOpen(aboutOpen === 'privacy' ? null : 'privacy')} />
                 {aboutOpen === 'privacy' && (
                   <Text style={[s.small, s.menuNote]}>
                     Your notes, searches and answers never leave this phone. Internet is used only once, to download the AI models. After that Ofunca works in airplane mode.
                   </Text>
                 )}
-                <MenuRow C={C} icon="🛠" label="Built with" onPress={() => setAboutOpen(aboutOpen === 'built' ? null : 'built')} last={aboutOpen !== 'built'} />
+                <MenuRow C={C} icon="construct-outline" label="Built with" onPress={() => setAboutOpen(aboutOpen === 'built' ? null : 'built')} last={aboutOpen !== 'built'} />
                 {aboutOpen === 'built' && (
                   <View style={s.menuNote}>
                     {BUILT_WITH.map(([k, v]) => (
@@ -1414,7 +1415,7 @@ function Main() {
                 )}
               </View>
 
-              <Text style={s.menuHead}>👋 DEVELOPER</Text>
+              <Text style={s.menuHead}>Developer</Text>
               <View style={s.menuGroup}>
                 <Text style={[s.menuText, { marginBottom: 2 }]}>{DEV.name}</Text>
                 <Text style={[s.small, { marginBottom: 8 }]}>Made Ofunca for students who study without steady internet. Feedback welcome!</Text>
@@ -1557,7 +1558,7 @@ function hasProgress(dl: Partial<Record<ModelKey, DlState>>) {
 function ActionBtn({ icon, label, onPress, active }: { icon: string; label: string; onPress: () => void; active?: boolean }) {
   return (
     <Pressable style={[s.action, active && { borderColor: C.accent, borderWidth: 2 }]} onPress={onPress}>
-      {active ? <ActivityIndicator color={C.accent} style={{ height: 28 }} /> : <Text style={s.actionIcon}>{icon}</Text>}
+      {active ? <ActivityIndicator color={C.accent} style={{ height: 28 }} /> : <Ionicons name={icon as any} size={28} color={C.primary} />}
       <Text style={s.actionLabel}>{label}</Text>
     </Pressable>
   );
@@ -1714,7 +1715,7 @@ const makeStyles = () => StyleSheet.create({
   line: { height: 2.5, borderRadius: 2, backgroundColor: '#fff' },
   dots: { alignItems: 'center', justifyContent: 'center', gap: 3 },
   dot: { width: 4.5, height: 4.5, borderRadius: 3, backgroundColor: '#fff' },
-  menuHead: { color: C.muted, fontSize: 12, fontWeight: '900', letterSpacing: 1, marginTop: 16, marginBottom: 6 },
+  menuHead: { color: C.muted, fontSize: 12, fontWeight: '900', letterSpacing: 1, marginTop: 16, marginBottom: 6, textTransform: 'uppercase' },
   menuGroup: { backgroundColor: C.bg, borderRadius: 16, paddingHorizontal: 12, paddingVertical: 4, borderWidth: 1, borderColor: C.border },
   menuNote: { paddingBottom: 10, gap: 3 },
   menuRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, gap: 10 },
