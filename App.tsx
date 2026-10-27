@@ -314,7 +314,7 @@ function Main() {
     await refreshLibrary();
   }
 
-  async function guarded(label: string, fn: () => Promise<void>, needs: 'embed' | 'llm' = 'embed') {
+  async function guarded(label: string, fn: () => Promise<void>, needs: 'embed' | 'llm' = 'embed', onFail?: () => void) {
     if (busy) return;
     const ready = () => (needs === 'llm' ? isReady() : isEmbedReady());
     setBusy(label);
@@ -327,9 +327,11 @@ function Main() {
       }
       await fn();
     } catch (e: any) {
+      onFail?.();
       Alert.alert('Something went wrong', e?.message ?? String(e));
     } finally {
       setBusy(null);
+      setGenerating(false);
     }
   }
 
@@ -560,7 +562,12 @@ function Main() {
       setQas((prev) =>
         prev.map((x) => (x.id === id ? { ...x, answer: show() || NOT_FOUND, hits: allHits, subject: subs.join(' · ') || undefined, done: true, ms: Date.now() - t0 } : x)),
       );
-    }, 'llm');
+    }, 'llm', () => {
+      // Failed: say so on the card and put the question back in the box so one tap retries it.
+      setQas((prev) => prev.map((x) => (x.id === id ? { ...x, answer: x.answer || '⚠️ Something went wrong while answering. Your question is back in the box: tap Ask to try again.', done: true } : x)));
+      setQuestion((cur) => cur || q);
+    });
+    setGenerating(false);
     setQas((prev) => prev.map((x) => (x.id === id ? { ...x, done: true } : x)));
   }
 
@@ -632,11 +639,17 @@ function Main() {
       for (let i = 0; i < excerpts.length + 4 && made < quizSize; i++) {
         const ex = excerpts[i % excerpts.length];
         setBusy(`Writing question ${made + 1} of ${quizSize}…`);
-        const raw = await generate(buildMcqPrompt(ex.text, asked), () => {}, {
-          maxTokens: 160,
+        let raw = '';
+        try {
+          raw = await generate(buildMcqPrompt(ex.text, asked), () => {}, {
+            maxTokens: 120,
+            firstTokenMs: 60000,
           temp: 0.6,
-          jsonSchema: MCQ_SCHEMA,
-        });
+            jsonSchema: MCQ_SCHEMA,
+          });
+        } catch {
+          continue; // one stuck question never stops the whole quiz
+        }
         const q = parseMcq(raw);
         if (!q || asked.some((x) => x.toLowerCase() === q.question.toLowerCase())) continue;
         asked.push(q.question);
@@ -836,7 +849,7 @@ function Main() {
         )}
 
         {tab === 'ask' && (
-          <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+          <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding">
             {subjects.length > 0 && <SubjectChips subjects={subjects} value={scopeValid} onChange={setScope} />}
             {qas.length > 0 && !busy && !generating && (
               <View style={s.histBar}>
@@ -1031,7 +1044,7 @@ function Main() {
       <Modal visible={!!editor} animationType="slide" onRequestClose={() => setEditor(null)}>
         <SafeAreaView style={s.safe}>
           <StatusBar style={dark ? 'light' : 'dark'} />
-          <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+          <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding">
             <View style={[s.header, { backgroundColor: C.card, borderBottomWidth: 2, borderBottomColor: C.border }]}>
               <Text style={[s.headerTitle, { flex: 1, color: C.text }]}>{editor?.mode === 'ocr' ? 'Check snapped text' : 'Paste notes'}</Text>
               <Pressable onPress={() => setEditor(null)} hitSlop={10}>

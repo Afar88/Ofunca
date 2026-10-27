@@ -317,10 +317,14 @@ export function isEmbedReady() {
 }
 
 let activeRequest: string | null = null;
+let abortActive: (() => void) | null = null;
 /** Stops the answer that is being written right now (keeps what was written so far). */
 export function stopGenerating() {
   if (activeRequest) cancel({ requestId: activeRequest } as any).catch(() => {});
+  abortActive?.(); // never wait on the engine to notice: free the Ask button right away
 }
+
+export class StalledError extends Error {}
 
 export async function unloadAll() {
   const ids = [llmId, embedId].filter(Boolean) as string[];
@@ -388,7 +392,7 @@ export type ChatMsg = { role: 'system' | 'user' | 'assistant'; content: string }
 export async function generate(
   history: ChatMsg[],
   onToken: (fullText: string) => void,
-  opts: { maxTokens?: number; temp?: number; jsonSchema?: object } = {},
+  opts: { maxTokens?: number; temp?: number; jsonSchema?: object; firstTokenMs?: number } = {},
 ): Promise<string> {
   if (!llmId && llmReload) await llmReload;
   if (!llmId) throw new Error('Models are not loaded yet');
@@ -404,8 +408,35 @@ export async function generate(
   activeRequest = (run as any).requestId ?? null;
   let acc = '';
   let last = 0;
+  // A stuck engine must never freeze the app: give up if no token arrives for a while
+  // (first token waits longer, since the phone reads the notes first), or when Stop is tapped.
+  let stopped = false;
+  let stalled = false;
+  let wake: (() => void) | null = null;
+  const abort = new Promise<{ done: true; value: undefined }>((res) => {
+    wake = () => res({ done: true, value: undefined });
+  });
+  abortActive = () => {
+    stopped = true;
+    wake?.();
+  };
+  let timer: any = null;
+  const arm = (ms: number) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      stalled = true;
+      if (activeRequest) cancel({ requestId: activeRequest } as any).catch(() => {});
+      wake?.();
+    }, ms);
+  };
+  const it = ((run as any).events as AsyncIterable<any>)[Symbol.asyncIterator]();
   try {
-    for await (const ev of (run as any).events as AsyncIterable<any>) {
+    arm(opts.firstTokenMs ?? 120000);
+    while (true) {
+      const step: any = await Promise.race([it.next(), abort]);
+      if (step.done) break;
+      const ev = step.value;
+      arm(45000);
       if (ev?.type === 'contentDelta' && typeof ev.text === 'string') {
         acc += ev.text;
         // Repaint at most ~12 times a second: smoother scrolling, less work for the phone.
@@ -416,13 +447,19 @@ export async function generate(
         }
       }
     }
-    try {
-      const fin = await (run as any).final;
-      if (fin?.content && fin.content.length >= acc.length) acc = fin.content;
-    } catch {}
+    if (!stopped && !stalled) {
+      try {
+        const fin = await Promise.race([(run as any).final, abort]);
+        if (fin?.content && fin.content.length >= acc.length) acc = fin.content;
+      } catch {}
+    }
   } finally {
+    clearTimeout(timer);
     activeRequest = null;
+    abortActive = null;
+    it.return?.().catch?.(() => {});
   }
+  if (stalled && !acc.trim()) throw new StalledError('The tutor took too long to reply. Please ask again.');
   onToken(acc);
   return acc.trim();
 }

@@ -253,13 +253,19 @@ export const MCQ_SCHEMA = {
   required: ['question', 'answer', 'wrong'],
 };
 
+function trimExcerpt(t: string, max = 650) {
+  if (t.length <= max) return t;
+  const cut = t.slice(0, max);
+  const end = Math.max(cut.lastIndexOf('. '), cut.lastIndexOf('\n'));
+  return end > max * 0.5 ? cut.slice(0, end + 1) : cut;
+}
+
 export function buildMcqPrompt(excerpt: string, avoid: string[] = []) {
-  const system =
-    'You write multiple-choice revision questions for students. The question must be answerable from the note excerpt alone. ' +
-    'Give the correct answer and three wrong but believable answers. Keep every option short (a few words). Reply with JSON only.';
+  // Short prompt + trimmed excerpt: on CPU most of the wait is the phone reading the prompt.
+  const system = 'Write one multiple-choice revision question answerable from the note excerpt. Correct answer plus three believable wrong ones, each a few words. JSON only.';
   const user =
-    `Note excerpt:\n${excerpt}\n\n` +
-    (avoid.length ? `Do not repeat these questions: ${avoid.slice(-8).map((q) => `"${q}"`).join('; ')}\n\n` : '') +
+    `Note excerpt:\n${trimExcerpt(excerpt)}\n\n` +
+    (avoid.length ? `Not these: ${avoid.slice(-4).map((q) => `"${q}"`).join('; ')}\n\n` : '') +
     'Write one multiple-choice question about this excerpt. Return JSON like {"question":"...","answer":"...","wrong":["...","...","..."]}';
   return [
     { role: 'system' as const, content: system },
