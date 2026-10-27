@@ -242,6 +242,16 @@ function Main() {
     saveSettings({ hideGuide: v });
   };
   const [menu, setMenu] = useState(false);
+  // The three add-notes buttons always stay bright. While one is working, the others politely say "one moment".
+  const [lastAction, setLastAction] = useState<'import' | 'snap' | 'paste' | null>(null);
+  function act(which: 'import' | 'snap' | 'paste', fn: () => Promise<void> | void) {
+    if (busy) {
+      Alert.alert('One moment ⏳', `Ofunca is still busy: ${busy.replace(/…$/, '')}. You can add more notes as soon as it's done.`);
+      return;
+    }
+    setLastAction(which);
+    fn();
+  }
   const [aboutOpen, setAboutOpen] = useState<null | 'privacy' | 'built'>(null);
   const [stash, setStash] = useState(false);
   const dark = themePref === 'dark' || (themePref === 'system' && sys === 'dark');
@@ -945,9 +955,9 @@ function Main() {
         {tab === 'notes' && (
           <ScrollView contentContainerStyle={s.pad}>
             <View style={s.actions}>
-              <ActionBtn icon="📄" label="Import PDF / text" onPress={importFile} disabled={!!busy} />
-              <ActionBtn icon="📷" label="Snap notes" onPress={snapNotes} disabled={!!busy} />
-              <ActionBtn icon="📋" label="Paste text" onPress={() => setEditor({ mode: 'paste', title: '', text: '', subject: subjects[0] ?? '' })} disabled={!!busy} />
+              <ActionBtn icon="📄" label="Import PDF / text" active={busy ? lastAction === 'import' : false} onPress={() => act('import', importFile)} />
+              <ActionBtn icon="📷" label="Snap notes" active={busy ? lastAction === 'snap' : false} onPress={() => act('snap', snapNotes)} />
+              <ActionBtn icon="📋" label="Paste text" onPress={() => act('paste', async () => setEditor({ mode: 'paste', title: '', text: '', subject: subjects[0] ?? '' }))} />
             </View>
             {!hideGuide && (
               <View style={s.card}>
@@ -1513,10 +1523,10 @@ function hasProgress(dl: Partial<Record<ModelKey, DlState>>) {
   return Object.values(dl).some((st) => st && (st.status === 'done' || st.downloaded > 0 || st.status === 'paused'));
 }
 
-function ActionBtn({ icon, label, onPress, disabled }: { icon: string; label: string; onPress: () => void; disabled?: boolean }) {
+function ActionBtn({ icon, label, onPress, active }: { icon: string; label: string; onPress: () => void; active?: boolean }) {
   return (
-    <Pressable style={[s.action, disabled && s.btnDisabled]} onPress={onPress} disabled={disabled}>
-      <Text style={s.actionIcon}>{icon}</Text>
+    <Pressable style={[s.action, active && { borderColor: C.accent, borderWidth: 2 }]} onPress={onPress}>
+      {active ? <ActivityIndicator color={C.accent} style={{ height: 28 }} /> : <Text style={s.actionIcon}>{icon}</Text>}
       <Text style={s.actionLabel}>{label}</Text>
     </Pressable>
   );
