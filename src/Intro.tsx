@@ -1,12 +1,17 @@
 // Intro: the Ofunca O pops in bare, then its graduation hat streaks in from the top corner like a shooting
 // star, loops around the O, swells as it climbs, and drops onto the O with a bounce. Then the
 // letters of "Ofunca" fall in one by one and the tagline fades up. Plays over loading. Tap to skip.
+// Full show on first launch and after updates; a quick version on every other launch.
 import React, { useEffect, useRef } from 'react';
+import * as FS from 'expo-file-system/legacy';
 import { Animated, Dimensions, Easing, Image, Pressable, StyleSheet, Text, View } from 'react-native';
 
 const PINK = '#FF3D8B';
 const TRAIL = 5;
 const LETTERS = 'Ofunca'.split('');
+// The full show plays on first launch and after each update; other launches get a quick ~1.5 s version.
+const SEEN = (FS.documentDirectory ?? '') + 'ofunca-intro-seen.json';
+const VERSION: string = require('../app.json').expo.version;
 export const TAGLINE = 'Study. Anywhere. No connection.';
 // The hat as cut from the logo (346×278 of 1024), shown at the logo's 240 px scale.
 const HAT_W = 81;
@@ -42,6 +47,42 @@ export function Intro({ onDone }: { onDone: () => void }) {
   const pathY = (v: Animated.Value) => v.interpolate({ inputRange: P, outputRange: Y });
 
   useEffect(() => {
+    let alive = true;
+    (async () => {
+      let full = true;
+      try {
+        const seen = JSON.parse(await FS.readAsStringAsync(SEEN));
+        full = seen?.version !== VERSION;
+      } catch {}
+      FS.writeAsStringAsync(SEEN, JSON.stringify({ version: VERSION })).catch(() => {});
+      if (!alive) return;
+      if (full) playFull();
+      else playShort();
+    })();
+    const t = setTimeout(finish, 7000); // safety net
+    return () => {
+      alive = false;
+      clearTimeout(t);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Quick version: the hat drops straight onto the O, the name and tagline rise in, a short hold.
+  const playShort = () => {
+    flight.setValue(1);
+    trail.forEach((t) => t.setValue(1));
+    Animated.sequence([
+      Animated.parallel([
+        Animated.spring(land, { toValue: 1, friction: 5, tension: 160, useNativeDriver: true }),
+        Animated.timing(glow, { toValue: 1, duration: 420, delay: 100, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
+        Animated.stagger(35, drops.map((d) => Animated.spring(d, { toValue: 1, friction: 6, tension: 170, useNativeDriver: true }))),
+        Animated.timing(tag, { toValue: 1, duration: 300, delay: 200, useNativeDriver: true }),
+      ]),
+      Animated.delay(550),
+    ]).start(() => finish());
+  };
+
+  const playFull = () => {
     const FLY = 1500;
     const fly = (v: Animated.Value, delay = 0) =>
       Animated.timing(v, { toValue: 1, duration: FLY, delay, easing: Easing.inOut(Easing.sin), useNativeDriver: true });
@@ -66,10 +107,7 @@ export function Intro({ onDone }: { onDone: () => void }) {
       Animated.timing(tag, { toValue: 1, duration: 380, easing: Easing.out(Easing.quad), useNativeDriver: true }),
       Animated.delay(1100), // hold the finished logo so it can be enjoyed
     ]).start(() => finish());
-    const t = setTimeout(finish, 7000); // safety net
-    return () => clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  };
 
   // While flying the hat follows the path; once landing starts it drops the last 70 px.
   const hatY = Animated.add(pathY(flight), land.interpolate({ inputRange: [0, 1], outputRange: [0, 70] }));
