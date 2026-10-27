@@ -16,13 +16,13 @@ import {
   useColorScheme,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
-import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FS from 'expo-file-system/legacy';
 import NetInfo from '@react-native-community/netinfo';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 
-import { C, DARK, LIGHT } from './src/theme';
+import { C, DARK, LIGHT, CANDY } from './src/theme';
 import { PdfExtractor, type PdfExtractorHandle } from './src/pdf/PdfExtractor';
 import { chunkPages, chunkText, type RawChunk } from './src/chunk';
 import { GENERAL, loadHistory, saveHistory, addDoc, clearAll, loadDB, makeId, removeDoc, roundVec, setDocSubject, subjectOf, subjectsOf, type NoteDoc, type StoredChunk } from './src/store';
@@ -397,6 +397,7 @@ function Main() {
 
   // ---------- Ask ----------
   const [qas, setQas] = useState<QA[]>([]);
+  const insets = useSafeAreaInsets();
   const [question, setQuestion] = useState('');
   const [scope, setScope] = useState<string>(AUTO); // AUTO = pick the subject that best matches the question
   const [generating, setGenerating] = useState(false);
@@ -666,23 +667,23 @@ function Main() {
   }
 
   return (
-    <SafeAreaView style={s.safe} edges={['top', 'left', 'right', 'bottom']}>
-      <StatusBar style={dark ? 'light' : 'dark'} />
-      <View style={s.header}>
+    <SafeAreaView style={s.safe} edges={['left', 'right', 'bottom']}>
+      <StatusBar style="light" />
+      <View style={[s.header, { paddingTop: insets.top + 12 }]}>
         <View style={{ flex: 1 }}>
           <Text style={s.headerTitle}>Study Tutor</Text>
-          <Text style={s.small}>
+          <Text style={[s.small, { color: 'rgba(255,255,255,0.8)', fontWeight: '700' }]}>
             {subjects.length} subject{subjects.length === 1 ? '' : 's'} · {docs.length} note{docs.length === 1 ? '' : 's'} · {device.toUpperCase()}
           </Text>
         </View>
         {ai !== 'ready' ? (
           <View style={[s.chip, s.chipOnline, { flexDirection: 'row', alignItems: 'center', gap: 6 }]}>
-            <ActivityIndicator size="small" color={C.primary} />
+            <ActivityIndicator size="small" color="#FFFFFF" />
             <Text style={s.chipText}>AI warming up</Text>
           </View>
         ) : (
           <View style={[s.chip, online === false ? s.chipOffline : s.chipOnline]}>
-            <Text style={[s.chipText, online === false ? { color: C.okText } : null]}>
+            <Text style={s.chipText}>
               {online === false ? '✈ Offline · on-device AI' : '● On-device AI'}
             </Text>
           </View>
@@ -924,8 +925,8 @@ function Main() {
         <SafeAreaView style={s.safe}>
           <StatusBar style={dark ? 'light' : 'dark'} />
           <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-            <View style={s.header}>
-              <Text style={[s.headerTitle, { flex: 1 }]}>{editor?.mode === 'ocr' ? 'Check snapped text' : 'Paste notes'}</Text>
+            <View style={[s.header, { backgroundColor: C.card, borderBottomWidth: 2, borderBottomColor: C.border }]}>
+              <Text style={[s.headerTitle, { flex: 1, color: C.text }]}>{editor?.mode === 'ocr' ? 'Check snapped text' : 'Paste notes'}</Text>
               <Pressable onPress={() => setEditor(null)} hitSlop={10}>
                 <Text style={s.del}>✕</Text>
               </Pressable>
@@ -1027,10 +1028,11 @@ function SubjectChips({
   return (
     <View style={inline ? undefined : s.chipBar}>
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingHorizontal: inline ? 0 : 16, paddingVertical: inline ? 0 : 10 }}>
-        {[AUTO, ...subjects].map((sub) => {
+        {[AUTO, ...subjects].map((sub, i) => {
           const on = value === sub;
+          const [face, edge] = sub === AUTO ? [C.primary, C.primaryDeep] : CANDY[(i - 1) % CANDY.length];
           return (
-            <Pressable key={sub} onPress={() => onChange(sub)} style={[s.pill, on && s.pillOn]}>
+            <Pressable key={sub} onPress={() => onChange(sub)} style={({ pressed }) => [s.pill, on && { backgroundColor: face, borderColor: edge }, pressed && { transform: [{ translateY: 2 }], borderBottomWidth: 2 }]}>
               <Text style={[s.pillText, on && s.pillTextOn]}>{sub === AUTO ? (autoLabel === 'Auto' ? '✨ Auto' : autoLabel) : sub}</Text>
             </Pressable>
           );
@@ -1200,94 +1202,94 @@ function applyTheme(dark: boolean) {
 
 const makeStyles = () => StyleSheet.create({
   safe: { flex: 1, backgroundColor: C.bg },
-  hero: { backgroundColor: '#0E1330' },
+  hero: { backgroundColor: '#2B0B5E' },
   setup: { padding: 22, paddingTop: 56, flexGrow: 1 },
-  brand: { width: 72, height: 72, borderRadius: 22, backgroundColor: C.primary, alignSelf: 'center', alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#6366F1' },
-  brandText: { color: '#fff', fontSize: 38, fontWeight: '900', letterSpacing: -1 },
-  brandDot: { position: 'absolute', right: 12, top: 12, width: 10, height: 10, borderRadius: 5, backgroundColor: C.accent },
-  title: { fontSize: 30, fontWeight: '800', color: '#FFFFFF', textAlign: 'center', marginTop: 18, letterSpacing: -0.5 },
-  tagline: { fontSize: 16, fontWeight: '700', color: '#A5B4FC', textAlign: 'center', marginTop: 6 },
-  sub: { fontSize: 14.5, color: '#9AA3C7', textAlign: 'center', marginTop: 10, marginBottom: 20, lineHeight: 21, paddingHorizontal: 8 },
-  heroSmall: { fontSize: 13.5, color: '#C7D2FE', textAlign: 'center' },
+  brand: { width: 84, height: 84, borderRadius: 28, backgroundColor: '#FF4FA3', alignSelf: 'center', alignItems: 'center', justifyContent: 'center', borderBottomWidth: 6, borderBottomColor: '#C81E74', transform: [{ rotate: '-6deg' }] },
+  brandText: { color: '#fff', fontSize: 44, fontWeight: '900', letterSpacing: -1, textShadowColor: 'rgba(0,0,0,0.25)', textShadowOffset: { width: 0, height: 3 }, textShadowRadius: 0 },
+  brandDot: { position: 'absolute', right: 12, top: 10, width: 16, height: 9, borderRadius: 6, backgroundColor: 'rgba(255,255,255,0.6)', transform: [{ rotate: '-25deg' }] },
+  title: { fontSize: 36, fontWeight: '900', color: '#FFFFFF', textAlign: 'center', marginTop: 20, letterSpacing: -0.5, textShadowColor: '#C81E74', textShadowOffset: { width: 0, height: 4 }, textShadowRadius: 0 },
+  tagline: { fontSize: 17, fontWeight: '800', color: '#FFC83D', textAlign: 'center', marginTop: 8 },
+  sub: { fontSize: 14.5, color: '#E3CCFF', textAlign: 'center', marginTop: 10, marginBottom: 20, lineHeight: 21, paddingHorizontal: 8 },
+  heroSmall: { fontSize: 13.5, color: '#E3CCFF', textAlign: 'center' },
   credit: { fontSize: 13, color: C.muted },
   creditSub: { fontSize: 11, color: C.muted, marginTop: 3, opacity: 0.8 },
   chipBar: { borderBottomWidth: 1, borderBottomColor: C.border, backgroundColor: C.card },
-  pill: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20, backgroundColor: C.bg, borderWidth: 1, borderColor: C.border, marginBottom: 4 },
-  pillOn: { backgroundColor: C.primary, borderColor: C.primary },
-  pillText: { fontSize: 13, fontWeight: '600', color: C.text },
+  pill: { paddingHorizontal: 16, paddingVertical: 8, borderRadius: 22, backgroundColor: C.card, borderWidth: 2, borderColor: C.border, borderBottomWidth: 4, marginBottom: 4 },
+  pillOn: { backgroundColor: C.primary, borderColor: C.primaryDeep },
+  pillText: { fontSize: 13.5, fontWeight: '800', color: C.text },
   pillTextOn: { color: '#fff' },
   groupHead: { fontSize: 12, fontWeight: '800', color: C.muted, textTransform: 'uppercase', letterSpacing: 0.8 },
-  fromTag: { alignSelf: 'flex-start', fontSize: 11, fontWeight: '700', color: C.primary, backgroundColor: C.primarySoft, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 10, marginBottom: 8, overflow: 'hidden' },
+  fromTag: { alignSelf: 'flex-start', fontSize: 11.5, fontWeight: '800', color: '#fff', backgroundColor: C.pink, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 10, marginBottom: 8, overflow: 'hidden' },
   replyBar: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 14, paddingVertical: 8, backgroundColor: C.primarySoft, borderTopWidth: 1, borderTopColor: C.border },
   qaActions: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 12 },
-  qaAction: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 14, backgroundColor: C.primarySoft },
-  qaActionText: { fontSize: 12.5, fontWeight: '700', color: C.primary },
+  qaAction: { paddingHorizontal: 14, paddingVertical: 7, borderRadius: 16, backgroundColor: C.primarySoft, borderBottomWidth: 3, borderBottomColor: C.border },
+  qaActionText: { fontSize: 12.5, fontWeight: '800', color: C.primary },
   histBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 8 },
   clearLink: { fontSize: 13, fontWeight: '700', color: C.danger },
   moreLink: { fontSize: 12.5, fontWeight: '700', color: C.primary, marginTop: 8 },
   scrim: { flex: 1, backgroundColor: 'rgba(14,19,48,0.55)', justifyContent: 'flex-end' },
   sheet: { backgroundColor: C.card, borderTopLeftRadius: 22, borderTopRightRadius: 22, padding: 20, paddingBottom: 28 },
-  card: { backgroundColor: C.card, borderRadius: 16, padding: 16, marginTop: 12, borderWidth: 1, borderColor: C.border },
-  h2: { fontSize: 18, fontWeight: '700', color: C.text, marginBottom: 6 },
-  h3: { fontSize: 15, fontWeight: '700', color: C.text, marginBottom: 4 },
+  card: { backgroundColor: C.card, borderRadius: 24, padding: 18, marginTop: 14, borderWidth: 2, borderColor: C.border, borderBottomWidth: 5 },
+  h2: { fontSize: 19, fontWeight: '900', color: C.text, marginBottom: 6 },
+  h3: { fontSize: 15.5, fontWeight: '800', color: C.text, marginBottom: 4 },
   body: { fontSize: 15, color: C.text, lineHeight: 22 },
   small: { fontSize: 12.5, color: C.muted, lineHeight: 18 },
   warn: { color: C.danger, marginTop: 10, fontSize: 13 },
   modelRow: { marginTop: 14 },
   modelName: { fontSize: 14, fontWeight: '600', color: C.text },
-  bar: { height: 8, backgroundColor: C.track, borderRadius: 4, overflow: 'hidden', marginTop: 6 },
-  barFill: { height: '100%', backgroundColor: C.primary },
-  btn: { backgroundColor: C.primary, borderRadius: 12, paddingVertical: 14, alignItems: 'center', marginTop: 16 },
-  btnText: { color: '#fff', fontWeight: '700', fontSize: 16 },
+  bar: { height: 12, backgroundColor: C.track, borderRadius: 6, overflow: 'hidden', marginTop: 6 },
+  barFill: { height: '100%', backgroundColor: C.pink, borderRadius: 6 },
+  btn: { backgroundColor: C.pink, borderRadius: 22, paddingVertical: 15, alignItems: 'center', marginTop: 16, borderBottomWidth: 5, borderBottomColor: C.pinkDeep },
+  btnText: { color: '#fff', fontWeight: '900', fontSize: 17, letterSpacing: 0.3 },
   btnDisabled: { opacity: 0.45 },
-  btnGhost: { borderWidth: 1.5, borderColor: C.primary, borderRadius: 12, paddingVertical: 11, alignItems: 'center', marginTop: 12 },
-  btnGhostText: { color: C.primary, fontWeight: '700', fontSize: 15 },
-  header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: C.border, backgroundColor: C.card },
-  headerTitle: { fontSize: 20, fontWeight: '800', color: C.text },
+  btnGhost: { borderWidth: 2, borderColor: C.primary, borderBottomWidth: 4, borderRadius: 22, paddingVertical: 11, alignItems: 'center', marginTop: 12, backgroundColor: C.card },
+  btnGhostText: { color: C.primary, fontWeight: '900', fontSize: 15 },
+  header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 14, backgroundColor: C.header, borderBottomLeftRadius: 22, borderBottomRightRadius: 22 },
+  headerTitle: { fontSize: 22, fontWeight: '900', color: '#FFFFFF' },
   chip: { paddingHorizontal: 10, paddingVertical: 6, borderRadius: 20 },
-  chipOnline: { backgroundColor: C.primarySoft },
-  chipOffline: { backgroundColor: C.ok },
-  chipText: { fontSize: 12, fontWeight: '700', color: C.primary },
+  chipOnline: { backgroundColor: 'rgba(255,255,255,0.18)' },
+  chipOffline: { backgroundColor: '#2ECC71' },
+  chipText: { fontSize: 12, fontWeight: '800', color: '#FFFFFF' },
   banner: { backgroundColor: C.ok, padding: 12 },
   bannerText: { color: C.okText, fontWeight: '600', fontSize: 13 },
   pad: { padding: 16, paddingBottom: 30 },
   actions: { flexDirection: 'row', gap: 10 },
-  action: { flex: 1, backgroundColor: C.card, borderRadius: 14, paddingVertical: 14, alignItems: 'center', borderWidth: 1, borderColor: C.border },
-  actionIcon: { fontSize: 24 },
-  actionLabel: { fontSize: 12.5, fontWeight: '600', color: C.text, marginTop: 4, textAlign: 'center' },
-  docRow: { flexDirection: 'row', alignItems: 'center', backgroundColor: C.card, borderRadius: 14, padding: 14, marginTop: 10, borderWidth: 1, borderColor: C.border },
+  action: { flex: 1, backgroundColor: C.card, borderRadius: 22, paddingVertical: 16, alignItems: 'center', borderWidth: 2, borderColor: C.border, borderBottomWidth: 5 },
+  actionIcon: { fontSize: 28 },
+  actionLabel: { fontSize: 12.5, fontWeight: '800', color: C.text, marginTop: 4, textAlign: 'center' },
+  docRow: { flexDirection: 'row', alignItems: 'center', backgroundColor: C.card, borderRadius: 20, padding: 14, marginTop: 10, borderWidth: 2, borderColor: C.border, borderBottomWidth: 4 },
   docIcon: { fontSize: 22, marginRight: 12 },
-  docName: { fontSize: 15, fontWeight: '600', color: C.text },
+  docName: { fontSize: 15, fontWeight: '800', color: C.text },
   del: { fontSize: 18, color: C.muted, paddingHorizontal: 6 },
   segment: { flexDirection: 'row', alignItems: 'center', marginTop: 12 },
-  segBtn: { paddingHorizontal: 14, paddingVertical: 6, borderRadius: 8, borderWidth: 1, borderColor: C.border, marginRight: 8 },
-  segBtnOn: { backgroundColor: C.primary, borderColor: C.primary },
-  segText: { fontSize: 12, fontWeight: '700', color: C.muted },
+  segBtn: { paddingHorizontal: 14, paddingVertical: 7, borderRadius: 16, borderWidth: 2, borderColor: C.border, borderBottomWidth: 4, marginRight: 8 },
+  segBtnOn: { backgroundColor: C.primary, borderColor: C.primaryDeep },
+  segText: { fontSize: 12.5, fontWeight: '800', color: C.muted },
   segTextOn: { color: '#fff' },
   inputRow: { flexDirection: 'row', alignItems: 'flex-end', padding: 10, borderTopWidth: 1, borderTopColor: C.border, backgroundColor: C.card, gap: 8 },
-  input: { flex: 1, maxHeight: 110, backgroundColor: C.bg, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 10, fontSize: 15, color: C.text },
-  send: { backgroundColor: C.primary, borderRadius: 12, paddingHorizontal: 18, paddingVertical: 12 },
-  sendText: { color: '#fff', fontWeight: '700' },
-  suggest: { backgroundColor: C.primarySoft, borderRadius: 10, padding: 10, marginTop: 10 },
-  suggestText: { color: C.primary, fontWeight: '600' },
-  qBubble: { alignSelf: 'flex-end', backgroundColor: C.primary, borderRadius: 16, borderBottomRightRadius: 4, padding: 12, maxWidth: '88%' },
-  qBubbleText: { color: '#fff', fontSize: 15, lineHeight: 21 },
-  aBubble: { alignSelf: 'stretch', backgroundColor: C.card, borderRadius: 16, borderBottomLeftRadius: 4, padding: 14, marginTop: 8, borderWidth: 1, borderColor: C.border },
+  input: { flex: 1, maxHeight: 110, backgroundColor: C.bg, borderRadius: 22, borderWidth: 2, borderColor: C.border, paddingHorizontal: 14, paddingVertical: 10, fontSize: 15, color: C.text },
+  send: { backgroundColor: C.pink, borderRadius: 22, paddingHorizontal: 20, paddingVertical: 12, borderBottomWidth: 4, borderBottomColor: C.pinkDeep },
+  sendText: { color: '#fff', fontWeight: '900' },
+  suggest: { backgroundColor: C.primarySoft, borderRadius: 18, padding: 12, marginTop: 10, borderBottomWidth: 3, borderBottomColor: C.border },
+  suggestText: { color: C.primary, fontWeight: '800' },
+  qBubble: { alignSelf: 'flex-end', backgroundColor: C.primary, borderRadius: 22, borderBottomRightRadius: 6, borderBottomWidth: 4, borderBottomColor: C.primaryDeep, padding: 12, maxWidth: '88%' },
+  qBubbleText: { color: '#fff', fontSize: 15, lineHeight: 21, fontWeight: '600' },
+  aBubble: { alignSelf: 'stretch', backgroundColor: C.card, borderRadius: 22, borderBottomLeftRadius: 6, padding: 16, marginTop: 8, borderWidth: 2, borderColor: C.border, borderBottomWidth: 5 },
   sourcesLabel: { fontSize: 12, fontWeight: '700', color: C.muted, marginTop: 14, marginBottom: 2, textTransform: 'uppercase', letterSpacing: 0.5 },
-  source: { backgroundColor: C.quote, borderLeftWidth: 3, borderLeftColor: C.accent, borderRadius: 8, padding: 10, marginTop: 8 },
+  source: { backgroundColor: C.quote, borderLeftWidth: 5, borderLeftColor: C.accent, borderRadius: 14, padding: 10, marginTop: 8 },
   sourceHead: { fontSize: 12, fontWeight: '700', color: C.accentText, marginBottom: 4 },
   sourceText: { fontSize: 13, color: C.text, lineHeight: 19, fontStyle: 'italic' },
   meta: { fontSize: 11, color: C.muted, marginTop: 10 },
-  qNum: { fontSize: 12, fontWeight: '700', color: C.primary, textTransform: 'uppercase', letterSpacing: 0.5 },
-  qText: { fontSize: 17, fontWeight: '600', color: C.text, marginTop: 6, lineHeight: 24 },
+  qNum: { fontSize: 12, fontWeight: '900', color: C.pink, textTransform: 'uppercase', letterSpacing: 0.5 },
+  qText: { fontSize: 18, fontWeight: '800', color: C.text, marginTop: 6, lineHeight: 24 },
   answerLabel: { fontSize: 12, fontWeight: '700', color: C.muted, marginTop: 14, marginBottom: 4, textTransform: 'uppercase' },
-  busy: { position: 'absolute', left: 16, right: 16, bottom: 78, backgroundColor: 'rgba(17,24,39,0.92)', borderRadius: 12, padding: 12, flexDirection: 'row', alignItems: 'center', gap: 10 },
+  busy: { position: 'absolute', left: 16, right: 16, bottom: 78, backgroundColor: 'rgba(59,15,120,0.95)', borderRadius: 20, padding: 12, flexDirection: 'row', alignItems: 'center', gap: 10 },
   busyText: { color: '#fff', fontSize: 14, flex: 1 },
-  tabs: { flexDirection: 'row', borderTopWidth: 1, borderTopColor: C.border, backgroundColor: C.card, paddingBottom: 4 },
+  tabs: { flexDirection: 'row', borderTopWidth: 2, borderTopColor: C.border, backgroundColor: C.card, paddingBottom: 6, paddingTop: 2, borderTopLeftRadius: 22, borderTopRightRadius: 22 },
   tab: { flex: 1, alignItems: 'center', paddingVertical: 8 },
-  tabIcon: { fontSize: 22 },
-  tabLabel: { fontSize: 12, color: C.muted, marginTop: 2, fontWeight: '600' },
-  tabLabelOn: { color: C.primary },
+  tabIcon: { fontSize: 24 },
+  tabLabel: { fontSize: 12, color: C.muted, marginTop: 2, fontWeight: '800' },
+  tabLabelOn: { color: C.pink },
   hint: { borderRadius: 12, padding: 12, marginBottom: 6 },
   hintWarn: { backgroundColor: C.warnBg },
   hintOk: { backgroundColor: C.ok },
