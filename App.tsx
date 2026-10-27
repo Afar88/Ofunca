@@ -128,6 +128,7 @@ function Main() {
     saveSettings({ hideGuide: v });
   };
   const [menu, setMenu] = useState(false);
+  const [stash, setStash] = useState(false);
   const dark = themePref === 'dark' || (themePref === 'system' && sys === 'dark');
   const themeKey = dark ? 'dark' : 'light';
   if (applied !== themeKey) applyTheme(dark);
@@ -761,31 +762,16 @@ function Main() {
                 <Text style={s.small}>Tap 📄, 📷 or 📋 above to add your first notes.</Text>
               </View>
             ) : (
-              subjects.map((sub) => (
-                <View key={sub} style={{ marginTop: 16 }}>
-                  <Text style={s.groupHead}>{sub}</Text>
-                  {docs.filter((d) => subjectOf(d) === sub).map((d) => (
-                    <Pressable key={d.id} style={s.docRow} onPress={() => moveDoc(d)}>
-                      <Text style={s.docIcon}>{d.kind === 'pdf' ? '📄' : d.kind === 'pasted' ? '📋' : '📝'}</Text>
-                      <View style={{ flex: 1 }}>
-                        <Text style={s.docName} numberOfLines={2}>{d.name}</Text>
-                        <Text style={s.small}>{d.chunkCount} passages · tap to change subject</Text>
-                      </View>
-                      <Pressable
-                        hitSlop={10}
-                        onPress={() =>
-                          Alert.alert('Remove notes?', d.name, [
-                            { text: 'Cancel', style: 'cancel' },
-                            { text: 'Remove', style: 'destructive', onPress: async () => { await removeDoc(d.id); await refreshLibrary(); } },
-                          ])
-                        }
-                      >
-                        <Text style={s.del}>✕</Text>
-                      </Pressable>
-                    </Pressable>
-                  ))}
+              <Pressable style={s.stashTile} onPress={() => setStash(true)}>
+                <Text style={{ fontSize: 30 }}>📚</Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={s.stashTitle}>My Study Stash</Text>
+                  <Text style={s.small}>
+                    {docs.length} note{docs.length === 1 ? '' : 's'} in {subjects.length} subject{subjects.length === 1 ? '' : 's'} · tap to open
+                  </Text>
                 </View>
-              ))
+                <Text style={s.stashArrow}>›</Text>
+              </Pressable>
             )}
             <Credit />
           </ScrollView>
@@ -1034,6 +1020,47 @@ function Main() {
         </SafeAreaView>
       </Modal>
 
+      <Modal visible={stash} transparent animationType="slide" onRequestClose={() => setStash(false)}>
+        <Pressable style={s.scrim} onPress={() => setStash(false)}>
+          <Pressable style={s.sheet} onPress={() => {}}>
+            <Text style={s.h2}>📚 My Study Stash</Text>
+            <Text style={s.small}>Tap a note to move it to another subject, ✕ to remove it.</Text>
+            <ScrollView style={{ maxHeight: 480 }}>
+              {docs.length === 0 ? <Text style={[s.small, { marginTop: 12 }]}>No notes yet.</Text> : (
+              subjects.map((sub) => (
+                <View key={sub} style={{ marginTop: 16 }}>
+                  <Text style={s.groupHead}>{sub}</Text>
+                  {docs.filter((d) => subjectOf(d) === sub).map((d) => (
+                    <Pressable key={d.id} style={s.docRow} onPress={() => moveDoc(d)}>
+                      <Text style={s.docIcon}>{d.kind === 'pdf' ? '📄' : d.kind === 'pasted' ? '📋' : '📝'}</Text>
+                      <View style={{ flex: 1 }}>
+                        <Text style={s.docName} numberOfLines={2}>{d.name}</Text>
+                        <Text style={s.small}>{d.chunkCount} passages · tap to change subject</Text>
+                      </View>
+                      <Pressable
+                        hitSlop={10}
+                        onPress={() =>
+                          Alert.alert('Remove notes?', d.name, [
+                            { text: 'Cancel', style: 'cancel' },
+                            { text: 'Remove', style: 'destructive', onPress: async () => { await removeDoc(d.id); await refreshLibrary(); } },
+                          ])
+                        }
+                      >
+                        <Text style={s.del}>✕</Text>
+                      </Pressable>
+                    </Pressable>
+                  ))}
+                </View>
+              ))
+              )}
+            </ScrollView>
+            <Pressable style={s.btn} onPress={() => setStash(false)}>
+              <Text style={s.btnText}>Close</Text>
+            </Pressable>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
       <Modal visible={menu} transparent animationType="fade" onRequestClose={() => setMenu(false)}>
         <Pressable style={s.scrim} onPress={() => setMenu(false)}>
           <Pressable style={s.sheet} onPress={() => {}}>
@@ -1055,6 +1082,9 @@ function Main() {
                   </Pressable>
                 ))}
               </View>
+              <Pressable style={s.menuItem} onPress={() => { setMenu(false); setStash(true); }}>
+                <Text style={s.menuText}>📚 My Study Stash ({docs.length} note{docs.length === 1 ? '' : 's'})</Text>
+              </Pressable>
               <Pressable style={s.menuItem} onPress={() => { setHideGuide(!hideGuide); setMenu(false); setTab('notes'); }}>
                 <Text style={s.menuText}>📖 {hideGuide ? 'Show' : 'Hide'} “How Ofunca works” guide</Text>
               </Pressable>
@@ -1379,6 +1409,9 @@ const makeStyles = () => StyleSheet.create({
   optText: { color: C.text, fontSize: 15, fontWeight: '600' },
   stepNum: { width: 32, height: 32, borderRadius: 16, backgroundColor: C.pink, alignItems: 'center', justifyContent: 'center', borderBottomWidth: 3, borderBottomColor: C.pinkDeep },
   stepNumText: { color: '#fff', fontWeight: '900', fontSize: 16 },
+  stashTile: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: C.card, borderRadius: 22, padding: 16, marginTop: 16, borderWidth: 2, borderColor: C.border, borderBottomWidth: 5 },
+  stashTitle: { color: C.text, fontSize: 18, fontWeight: '900' },
+  stashArrow: { color: C.primary, fontSize: 30, fontWeight: '900' },
   moreBtn: { marginLeft: 8, width: 36, height: 36, borderRadius: 18, backgroundColor: 'rgba(255,255,255,0.22)', alignItems: 'center', justifyContent: 'center' },
   moreText: { color: '#fff', fontSize: 22, fontWeight: '900', marginTop: -4 },
   menuItem: { paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: C.border },
