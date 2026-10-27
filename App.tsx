@@ -1294,6 +1294,8 @@ function Main() {
                   ))}
                 </View>
               )}
+              <Text style={s.label}>Subject</Text>
+              <SubjectSelect subjects={subjects} value={editor?.subject ?? ''} onChange={(v) => setEditor((e) => (e ? { ...e, subject: v } : e))} />
               <Text style={s.label}>Title</Text>
               <TextInput
                 style={s.field}
@@ -1302,8 +1304,6 @@ function Main() {
                 placeholder="e.g. Week 3 — Cell biology"
                 placeholderTextColor={C.muted}
               />
-              <Text style={s.label}>Subject</Text>
-              <SubjectSelect subjects={subjects} value={editor?.subject ?? ''} onChange={(v) => setEditor((e) => (e ? { ...e, subject: v } : e))} />
               <Text style={s.label}>Text</Text>
               <TextInput
                 style={[s.field, s.area]}
@@ -1458,6 +1458,7 @@ function Main() {
       </SideDrawer>
 
       <Modal visible={!!picker} transparent animationType="fade" onRequestClose={() => closePicker(null)}>
+        <KeyboardAvoidingView behavior="padding" style={{ flex: 1 }}>
         <Pressable style={s.scrim} onPress={() => closePicker(null)}>
           <Pressable style={s.sheet} onPress={() => {}}>
             <Text style={s.h2}>{picker?.title}</Text>
@@ -1470,10 +1471,11 @@ function Main() {
             </Pressable>
           </Pressable>
         </Pressable>
+        </KeyboardAvoidingView>
       </Modal>
 
       <Modal visible={report !== null} transparent animationType="fade" onRequestClose={() => setReport(null)}>
-        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
+        <KeyboardAvoidingView behavior="padding" style={{ flex: 1 }}>
           <Pressable style={s.scrim} onPress={() => setReport(null)}>
             <Pressable style={s.sheet} onPress={() => {}}>
               <Text style={s.h2}>Report a problem</Text>
