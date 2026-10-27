@@ -60,6 +60,7 @@ import { installBundledOcr, unloadLlm, reloadLlm } from './src/qvac';
 import { checkForUpdate } from './src/update';
 import { Ionicons } from '@expo/vector-icons';
 import { Intro } from './src/Intro';
+import { noteError, lastErrorLine } from './src/lastError';
 import { Confetti } from './src/Confetti';
 import {
   NOT_FOUND,
@@ -252,7 +253,8 @@ function Main() {
   const [aboutOpen, setAboutOpen] = useState<null | 'privacy' | 'built'>(null);
   const [report, setReport] = useState<string | null>(null);
   const sendReport = (via: 'sms' | 'wa' | 'mail') => {
-    const body = `${(report ?? '').trim()}\n\n— Ofunca v${APP_VERSION}, Android ${Platform.Version}`;
+    const err = lastErrorLine();
+    const body = `${(report ?? '').trim()}\n\n— Ofunca v${APP_VERSION}, Android ${Platform.Version}${err ? '\n' + err : ''}`;
     const enc = encodeURIComponent(body);
     const url = via === 'sms' ? `sms:+2347040175686?body=${enc}` : via === 'wa' ? `https://wa.me/2347040175686?text=${enc}` : `mailto:destinymomobu@gmail.com?subject=${encodeURIComponent('Ofunca problem report')}&body=${enc}`;
     Linking.openURL(url).then(() => setReport(null)).catch(() => Alert.alert('Could not open', 'No app on this phone can send that. Try another option.'));
@@ -313,6 +315,7 @@ function Main() {
         warmUp().catch(() => {});
         return true;
       } catch (e: any) {
+        noteError(e);
         setAi('off');
         setPhase('error');
         setPhaseMsg(e?.message ?? String(e));
@@ -378,6 +381,7 @@ function Main() {
       await bootModels(device);
       installBundledOcr().catch(() => {});
     } catch (e: any) {
+      noteError(e);
       setPhase('needDownload');
       await refreshSaved().catch(() => {});
       Alert.alert(
@@ -407,6 +411,7 @@ function Main() {
         Alert.alert('Model imported', `${m.fileName} is ready. ${!c.embed || !c.llm ? 'Import or download the other model to finish setup.' : ''}`);
       }
     } catch (e: any) {
+      noteError(e);
       Alert.alert('Import failed', e?.message ?? String(e));
     } finally {
       setImporting(null);
@@ -471,6 +476,7 @@ function Main() {
       }
       await fn();
     } catch (e: any) {
+      noteError(e);
       onFail?.();
       Alert.alert('Something went wrong', e?.message ?? String(e));
     } finally {
@@ -578,6 +584,7 @@ function Main() {
         uri = r.assets[0].uri;
       }
     } catch (e: any) {
+      noteError(e);
       Alert.alert('Could not open photos', String(e?.message ?? e));
       return;
     }
@@ -1463,7 +1470,9 @@ function Main() {
                 placeholderTextColor={C.muted}
                 value={report ?? ''}
                 onChangeText={setReport}
+                maxLength={300}
               />
+              <Text style={[s.small, { textAlign: 'right', marginTop: 4 }]}>{(report ?? '').length}/300{lastErrorLine() ? ' · last error attached' : ''}</Text>
               <Pressable style={[s.btn, !report?.trim() && { opacity: 0.5 }]} disabled={!report?.trim()} onPress={() => sendReport('sms')}>
                 <Text style={s.btnText}>Send by SMS</Text>
               </Pressable>
