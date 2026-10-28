@@ -43,6 +43,12 @@ jobs:
       - name: Install JS dependencies
         run: npm ci --no-audit --no-fund
 
+      - name: Logic checks (quiz engine, model lock, answer keys, keyboard math)
+        run: |
+          node --import ./scripts/ts-resolve.mjs --experimental-strip-types scripts/check-quiz.ts
+          node --import ./scripts/ts-resolve.mjs --experimental-strip-types scripts/check-mcq-key.ts
+          node --experimental-strip-types scripts/check-keyboard.ts
+
       - name: Generate offline PDF reader page
         run: node scripts/build-pdf-html.js
 

@@ -29,6 +29,7 @@ import {
   type ModelKey,
   type ModelSpec,
 } from './modelDownload';
+import { PriorityLock, PRI, Preempted, Cancelled } from './llmLock';
 
 export const LLM_MODEL = LLAMA_3_2_1B_INST_Q4_0;
 export const EMBED_MODEL = EMBEDDINGGEMMA_300M_Q4_0;
@@ -293,14 +294,18 @@ export async function loadLlmModel(device: Device) {
 export async function warmUp() {
   if (!llmId) return;
   try {
-    const run: any = completion({
-      modelId: llmId,
-      history: [{ role: 'user', content: 'Hi' }],
-      stream: true,
-      generationParams: { predict: 1, temp: 0 },
-    } as any);
-    for await (const _ of run.events) {
-    }
+    // lowest priority: a question asked at startup never waits behind the warm-up for long
+    await llmLock.run(PRI.quiz, async () => {
+      if (!llmId) return;
+      const run: any = completion({
+        modelId: llmId,
+        history: [{ role: 'user', content: 'Hi' }],
+        stream: true,
+        generationParams: { predict: 1, temp: 0 },
+      } as any);
+      for await (const _ of run.events) {
+      }
+    });
   } catch {}
 }
 
@@ -316,12 +321,21 @@ export function isEmbedReady() {
   return !!embedId;
 }
 
-let activeRequest: string | null = null;
-let abortActive: (() => void) | null = null;
+// One model, one job at a time: Ask goes first, a quiz question waits (or is paused), Snap notes waits for an answer.
+export const llmLock = new PriorityLock();
+// Embeddings: a question's search slips in between batches of a note that is being indexed.
+export const embedLock = new PriorityLock();
+
+export type GenKind = 'ask' | 'quiz';
+type Ctl = { kind: GenKind; stop: () => void; cancelWait: () => void };
+const active = new Set<Ctl>();
+
 /** Stops the answer that is being written right now (keeps what was written so far). */
-export function stopGenerating() {
-  if (activeRequest) cancel({ requestId: activeRequest } as any).catch(() => {});
-  abortActive?.(); // never wait on the engine to notice: free the Ask button right away
+export function stopGenerating(kind: GenKind = 'ask') {
+  for (const c of [...active]) if (c.kind === kind) {
+    c.cancelWait();
+    c.stop();
+  }
 }
 
 export class StalledError extends Error {}
@@ -370,10 +384,13 @@ const QUERY_PREFIX = 'task: search result | query: ';
 export async function embedDocuments(texts: string[], onProgress?: (done: number, total: number) => void): Promise<number[][]> {
   if (!embedId) throw new Error('Models are not loaded yet');
   const out: number[][] = [];
-  const BATCH = 32; // fewer round trips to the engine: noticeably faster indexing on CPU
+  const BATCH = 16; // small enough that a question asked meanwhile waits only a moment for its search to the engine: noticeably faster indexing on CPU
   for (let i = 0; i < texts.length; i += BATCH) {
     const batch = texts.slice(i, i + BATCH).map((t) => DOC_PREFIX + t);
-    const { embedding } = await embed({ modelId: embedId, text: batch });
+    const { embedding } = await embedLock.run(1, async () => {
+      if (!embedId) throw new Error('Models are not loaded yet');
+      return embed({ modelId: embedId, text: batch });
+    });
     out.push(...embedding);
     onProgress?.(Math.min(i + BATCH, texts.length), texts.length);
   }
@@ -382,86 +399,136 @@ export async function embedDocuments(texts: string[], onProgress?: (done: number
 
 export async function embedQuery(q: string): Promise<number[]> {
   if (!embedId) throw new Error('Models are not loaded yet');
-  const { embedding } = await embed({ modelId: embedId, text: QUERY_PREFIX + q });
+  const { embedding } = await embedLock.run(2, async () => {
+    if (!embedId) throw new Error('Models are not loaded yet');
+    return embed({ modelId: embedId, text: QUERY_PREFIX + q });
+  });
   return embedding;
 }
 
 export type ChatMsg = { role: 'system' | 'user' | 'assistant'; content: string };
 
-/** Streams an answer token by token. */
+/** Streams an answer token by token. Waits its turn for the model (see llmLock): kind 'ask' goes before 'quiz',
+ *  and a 'quiz' run that an Ask interrupts throws Preempted so the quiz writes that question again afterwards. */
 export async function generate(
   history: ChatMsg[],
   onToken: (fullText: string) => void,
-  opts: { maxTokens?: number; temp?: number; repeatPenalty?: number; jsonSchema?: object; firstTokenMs?: number } = {},
+  opts: { maxTokens?: number; temp?: number; repeatPenalty?: number; jsonSchema?: object; firstTokenMs?: number; kind?: GenKind; onWaiting?: (waiting: boolean) => void } = {},
 ): Promise<string> {
-  if (!llmId && llmReload) await llmReload;
-  if (!llmId) throw new Error('Models are not loaded yet');
-  const run = completion({
-    modelId: llmId,
-    history,
-    stream: true,
-    generationParams: { temp: opts.temp ?? 0.2, predict: opts.maxTokens ?? 400, top_p: 0.9, repeat_penalty: opts.repeatPenalty ?? 1.15 },
-    ...(opts.jsonSchema
-      ? { responseFormat: { type: 'json_schema', json_schema: { name: 'quiz', schema: opts.jsonSchema } } }
-      : {}),
-  } as any);
-  activeRequest = (run as any).requestId ?? null;
-  let acc = '';
-  let last = 0;
-  // A stuck engine must never freeze the app: give up if no token arrives for a while
-  // (first token waits longer, since the phone reads the notes first), or when Stop is tapped.
+  const kind: GenKind = opts.kind ?? 'ask';
+  let requestId: string | null = null;
   let stopped = false;
   let stalled = false;
+  let preempted = false;
   let wake: (() => void) | null = null;
   const abort = new Promise<{ done: true; value: undefined }>((res) => {
     wake = () => res({ done: true, value: undefined });
   });
-  abortActive = () => {
-    stopped = true;
+  const cancelReq = () => {
+    if (requestId) cancel({ requestId } as any).catch(() => {});
+  };
+  const lockReq = llmLock.acquire(kind === 'ask' ? PRI.ask : PRI.quiz, () => {
+    // a higher-priority job wants the model: a quiz question steps aside (an answer is never interrupted)
+    if (kind !== 'quiz') return;
+    preempted = true;
+    cancelReq();
     wake?.();
+  });
+  const ctl: Ctl = {
+    kind,
+    stop: () => {
+      stopped = true;
+      cancelReq();
+      wake?.(); // never wait on the engine to notice: free the button right away
+    },
+    cancelWait: lockReq.cancel,
   };
-  let timer: any = null;
-  const arm = (ms: number) => {
-    clearTimeout(timer);
-    timer = setTimeout(() => {
-      stalled = true;
-      if (activeRequest) cancel({ requestId: activeRequest } as any).catch(() => {});
-      wake?.();
-    }, ms);
-  };
-  const it = ((run as any).events as AsyncIterable<any>)[Symbol.asyncIterator]();
+  active.add(ctl);
+  let release: (() => void) | null = null;
   try {
-    arm(opts.firstTokenMs ?? 120000);
-    while (true) {
-      const step: any = await Promise.race([it.next(), abort]);
-      if (step.done) break;
-      const ev = step.value;
-      arm(45000);
-      if (ev?.type === 'contentDelta' && typeof ev.text === 'string') {
-        acc += ev.text;
-        // Repaint at most ~12 times a second: smoother scrolling, less work for the phone.
-        const now = Date.now();
-        if (now - last > 80) {
-          last = now;
-          onToken(acc);
+    const waiting = llmLock.busy;
+    if (waiting) opts.onWaiting?.(true);
+    try {
+      release = await lockReq.ready;
+    } catch (e) {
+      if (e instanceof Cancelled) return '';
+      throw e;
+    } finally {
+      if (waiting) opts.onWaiting?.(false);
+    }
+    if (stopped) return '';
+    if (!llmId && llmReload) await llmReload;
+    if (!llmId) throw new Error('Models are not loaded yet');
+    const run = completion({
+      modelId: llmId,
+      history,
+      stream: true,
+      generationParams: { temp: opts.temp ?? 0.2, predict: opts.maxTokens ?? 400, top_p: 0.9, repeat_penalty: opts.repeatPenalty ?? 1.15 },
+      ...(opts.jsonSchema
+        ? { responseFormat: { type: 'json_schema', json_schema: { name: 'quiz', schema: opts.jsonSchema } } }
+        : {}),
+    } as any);
+    requestId = (run as any).requestId ?? null;
+    if (stopped || preempted) cancelReq();
+    let acc = '';
+    let last = 0;
+    // A stuck engine must never freeze the app: give up if no token arrives for a while
+    // (first token waits longer, since the phone reads the notes first), or when Stop is tapped.
+    let timer: any = null;
+    const arm = (ms: number) => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        stalled = true;
+        cancelReq();
+        wake?.();
+      }, ms);
+    };
+    const it = ((run as any).events as AsyncIterable<any>)[Symbol.asyncIterator]();
+    try {
+      arm(opts.firstTokenMs ?? 120000);
+      while (!stopped && !preempted) {
+        const step: any = await Promise.race([it.next(), abort]);
+        if (step.done) break;
+        const ev = step.value;
+        arm(45000);
+        if (ev?.type === 'contentDelta' && typeof ev.text === 'string') {
+          acc += ev.text;
+          // Repaint at most ~12 times a second: smoother scrolling, less work for the phone.
+          const now = Date.now();
+          if (now - last > 80) {
+            last = now;
+            onToken(acc);
+          }
         }
       }
+      if (!stopped && !stalled && !preempted) {
+        try {
+          const fin = await Promise.race([(run as any).final, abort]);
+          if (fin?.content && fin.content.length >= acc.length) acc = fin.content;
+        } catch {}
+      }
+    } finally {
+      clearTimeout(timer);
+      it.return?.()?.catch?.(() => {});
+      // the engine needs a moment to really stop after cancel; the next job must not start on top of it
+      if ((stopped || preempted || stalled) && requestId) {
+        await Promise.race([Promise.resolve((run as any).final).catch(() => {}), new Promise((r) => setTimeout(r, 1500))]);
+      }
     }
-    if (!stopped && !stalled) {
-      try {
-        const fin = await Promise.race([(run as any).final, abort]);
-        if (fin?.content && fin.content.length >= acc.length) acc = fin.content;
-      } catch {}
-    }
+    if (preempted) throw new Preempted();
+    if (stalled && !acc.trim()) throw new StalledError('The tutor took too long to reply. Please ask again.');
+    onToken(acc);
+    return acc.trim();
   } finally {
-    clearTimeout(timer);
-    activeRequest = null;
-    abortActive = null;
-    it.return?.().catch?.(() => {});
+    active.delete(ctl);
+    release?.();
   }
-  if (stalled && !acc.trim()) throw new StalledError('The tutor took too long to reply. Please ask again.');
-  onToken(acc);
-  return acc.trim();
+}
+
+/** Runs fn with the tutor model to itself (Snap notes unloads it while the photo reader works). A quiz question
+ *  being written is paused; an answer being written is finished first. */
+export function withModelExclusive<T>(fn: () => Promise<T>): Promise<T> {
+  return llmLock.run(PRI.exclusive, fn);
 }
 
 /**

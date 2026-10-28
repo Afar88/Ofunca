@@ -33,7 +33,7 @@ import { C, DARK, LIGHT, CANDY } from './src/theme';
 import { KeyboardSafe, useKeyboardTop } from './src/keyboard';
 import { PdfExtractor, type PdfExtractorHandle } from './src/pdf/PdfExtractor';
 import { chunkPages, chunkText, type RawChunk } from './src/chunk';
-import { GENERAL, loadHistory, saveHistory, addDoc, clearAll, loadDB, makeId, removeDoc, roundVec, setDocSubject, subjectOf, subjectsOf, type NoteDoc, type StoredChunk } from './src/store';
+import { GENERAL, loadHistory, saveHistory, addDoc, clearAll, loadDB, makeId, removeDoc, roundVec, setDocSubject, setDocFactCounts, subjectOf, subjectsOf, type NoteDoc, type StoredChunk } from './src/store';
 import {
   MODELS,
   MODEL_GROUPS,
@@ -58,7 +58,9 @@ import {
 } from './src/qvac';
 import { friendlyError, type DlState, type ModelKey } from './src/modelDownload';
 import { ocrCached, recognise, releaseOcr, type OcrResult } from './src/ocr';
-import { installBundledOcr, unloadLlm, reloadLlm } from './src/qvac';
+import { installBundledOcr, unloadLlm, reloadLlm, withModelExclusive } from './src/qvac';
+import { Preempted } from './src/llmLock';
+import { writeQuiz, countFacts, capacityFromFacts, stripOptionMarker, Preempted as QuizPreempted } from './src/quizGen';
 import { checkForUpdate } from './src/update';
 import { Ionicons } from '@expo/vector-icons';
 import { Camera } from 'expo-camera';
@@ -554,7 +556,11 @@ function Main() {
   }
 
   async function switchDevice(dev: Device) {
-    if (dev === device || busy) return;
+    if (dev === device) return;
+    if (busy || quizRunningRef.current || askActiveRef.current) {
+      Alert.alert('One moment', 'Ofunca is still working (a quiz, an answer or new notes). Switch when it has finished.');
+      return;
+    }
     if (booting.current) {
       Alert.alert('One moment', 'The AI is still starting. Try switching again when it is ready.');
       return;
@@ -576,7 +582,7 @@ function Main() {
     const docId = makeId('d');
     const stored: StoredChunk[] = raw.map((c, i) => ({ id: makeId('c'), docId, page: c.page, text: c.text, vec: roundVec(vecs[i]) }));
     await addDoc(
-      { id: docId, name, kind, subject: subject.trim() || GENERAL, addedAt: Date.now(), chunkCount: stored.length, charCount: raw.reduce((s, c) => s + c.text.length, 0) },
+      { id: docId, name, kind, subject: subject.trim() || GENERAL, addedAt: Date.now(), chunkCount: stored.length, charCount: raw.reduce((s, c) => s + c.text.length, 0), factCount: countFacts(raw.map((c) => c.text)) },
       stored,
     );
     await refreshLibrary();
@@ -620,7 +626,6 @@ function Main() {
       Alert.alert('Something went wrong', e?.message ?? String(e));
     } finally {
       setBusy(null);
-      setGenerating(false);
     }
   }
 
@@ -757,20 +762,25 @@ function Main() {
 
   async function readPhoto(photo: string) {
     await guarded('Reading photo…', async () => {
-      try {
-        // Make room: the tutor model steps aside while the photo reader works, then comes back.
-        setBusy('Making room for the photo reader…');
-        await unloadLlm();
-        const r = await recognise(photo, setBusy);
-        await releaseOcr();
-        setBusy('Getting the tutor ready again…');
-        await reloadLlm(device);
-        if (!r.text.trim()) throw new Error('No text was found in this photo. Try a sharper, well-lit photo taken straight on.');
-        openEditor({ mode: 'ocr', title: 'Snapped notes ' + new Date().toLocaleDateString(), text: r.text, subject: '', ocr: r });
-      } finally {
-        releaseOcr().catch(() => {});
-        reloadLlm(device).catch(() => {});
-      }
+      // Make room: the tutor model steps aside while the photo reader works, then comes back. It waits for an
+      // answer that is being written, and pauses a quiz (which carries on by itself afterwards).
+      setBusy('Waiting for the tutor to finish…');
+      const r = await withModelExclusive(async () => {
+        try {
+          setBusy('Making room for the photo reader…');
+          await unloadLlm();
+          const out = await recognise(photo, setBusy);
+          await releaseOcr();
+          setBusy('Getting the tutor ready again…');
+          await reloadLlm(device);
+          return out;
+        } finally {
+          await releaseOcr().catch(() => {});
+          await reloadLlm(device).catch(() => {});
+        }
+      });
+      if (!r.text.trim()) throw new Error('No text was found in this photo. Try a sharper, well-lit photo taken straight on.');
+      openEditor({ mode: 'ocr', title: 'Snapped notes ' + new Date().toLocaleDateString(), text: r.text, subject: '', ocr: r });
     });
   }
 
@@ -811,42 +821,73 @@ function Main() {
 
   const [replyTo, setReplyTo] = useState<QA | null>(null);
 
+  // Ask never waits in the import/snap line and never waits for a quiz: it has its own state, and the model lock
+  // (src/llmLock.ts) lets an answer go first. A quiz that is being written pauses and carries on by itself.
+  const [askStatus, setAskStatus] = useState<string | null>(null);
+  const [askActive, setAskActive] = useState(false);
+  const askActiveRef = useRef(false);
+  async function aiReady(needs: 'embed' | 'llm', say: (t: string | null) => void = setAskStatus) {
+    const ready = () => (needs === 'llm' ? isReady() : isEmbedReady());
+    if (ready()) return;
+    say('Getting the AI ready… (only takes a moment)');
+    const ok = await (modelsReady.current ?? Promise.resolve(false));
+    if (!ok || !ready()) throw new Error('The AI models could not be loaded. Restart the app and try again.');
+  }
+  /** Runs one Ask job; failures show on the card instead of blocking the screen. */
+  async function runAsk(fn: () => Promise<void>, onFail: () => void) {
+    askActiveRef.current = true;
+    setAskActive(true);
+    try {
+      await fn();
+    } catch (e: any) {
+      noteError(e, 'ask');
+      onFail();
+    } finally {
+      askActiveRef.current = false;
+      setAskActive(false);
+      setAskStatus(null);
+      setGenerating(false);
+    }
+  }
+  const askWaiting = (w: boolean) => setAskStatus(w ? (quizRunningRef.current ? 'Quiz paused · answering your question…' : 'Waiting for the tutor…') : quizRunningRef.current ? 'Quiz paused · answering your question…' : 'Thinking…');
+
   // A reply to an earlier answer reuses that answer's passages, so it stays on the same topic.
   async function followUp(prev: QA, text: string) {
+    if (askActiveRef.current) return;
     Keyboard.dismiss(); // Shorter / Reply: put the keyboard away so the answer is visible
     setReplyTo(null);
     const id = makeId('q');
     const t0 = Date.now();
-    await guarded('Thinking…', async () => {
-      setQas((p) => [...p, { id, question: text === SHORTER ? 'Shorter, please' : text, answer: '', hits: prev.hits, done: false, subject: prev.subject, replyTo: { id: prev.id, question: prev.question } }]);
-      setBusy(null);
-      setGenerating(true);
+    setQas((p) => [...p, { id, question: text === SHORTER ? 'Shorter, please' : text, answer: '', hits: prev.hits, done: false, subject: prev.subject, replyTo: { id: prev.id, question: prev.question } }]);
+    await runAsk(async () => {
+      await aiReady('llm');
+      setAskStatus(quizRunningRef.current ? 'Quiz paused · answering your question…' : 'Thinking…');
       let answer = '';
       try {
         answer = dropNotFoundTail(cleanAnswer(
           await generate(
             buildFollowUpPrompt(prev.question, prev.answer, text, prev.hits),
-            (txt) => setQas((p) => p.map((x) => (x.id === id ? { ...x, answer: cleanAnswer(txt) } : x))),
-            { maxTokens: 150 },
+            (txt) => {
+              setAskStatus(null);
+              setGenerating(true);
+              setQas((p) => p.map((x) => (x.id === id ? { ...x, answer: cleanAnswer(txt) } : x)));
+            },
+            { maxTokens: 150, kind: 'ask', onWaiting: askWaiting },
           ),
         ));
       } finally {
         setGenerating(false);
       }
       setQas((p) => p.map((x) => (x.id === id ? { ...x, answer: answer || NOT_FOUND, done: true, ms: Date.now() - t0 } : x)));
-    }, 'llm');
+    }, () => {
+      setQas((p) => p.map((x) => (x.id === id ? { ...x, answer: x.answer || '⚠️ Something went wrong while answering. Tap Shorter or Reply on the answer above to try again.', done: true } : x)));
+    });
     setQas((p) => p.map((x) => (x.id === id ? { ...x, done: true } : x)));
   }
 
-  const asking = useRef(false);
   async function ask() {
-    if (asking.current) return; // Ask tapped twice (or Enter + tap) before the screen updated
-    asking.current = true;
-    try {
-      await askOnce();
-    } finally {
-      asking.current = false;
-    }
+    if (askActiveRef.current) return; // Ask tapped twice (or Enter + tap) before the screen updated
+    await askOnce();
   }
   async function askOnce() {
     const q = question.trim();
@@ -864,8 +905,14 @@ function Main() {
     setQuestion('');
     const id = makeId('q');
     const t0 = Date.now();
-    await guarded('Searching your notes…', async () => {
-      setQas((prev) => [...prev, { id, question: q, answer: '', hits: [], done: false }]);
+    // snapshot: notes added or removed while this answer is written must not change what it searches mid-way
+    const pool = chunksIn(scopeValid);
+    const names = { ...docNames };
+    const subjOf = { ...subjectByDoc };
+    setQas((prev) => [...prev, { id, question: q, answer: '', hits: [], done: false }]);
+    await runAsk(async () => {
+      await aiReady('llm');
+      setAskStatus('Searching your notes…');
       // Each question in the message gets its own search, subject and note, so answers never mix.
       const parts = splitQuestions(q);
       const multi = parts.length > 1;
@@ -881,24 +928,27 @@ function Main() {
         // "Summarise the main ideas" matches no single passage strongly, so it gets the best note's top passages
         // and its own short prompt: plain prose, no numbered excerpts to leak as "[1. …", no "couldn't find" line.
         const summary = isSummaryRequest(part);
-        let hits = search(qv, part, chunksIn(scopeValid), docNames, 8);
-        const subject = scopeValid === AUTO ? subjectByDoc[hits[0]?.chunk.docId] : scopeValid;
-        hits = hits.filter((h) => subjectByDoc[h.chunk.docId] === subject);
+        let hits = search(qv, part, pool, names, 8);
+        const subject = scopeValid === AUTO ? subjOf[hits[0]?.chunk.docId] : scopeValid;
+        hits = hits.filter((h) => subjOf[h.chunk.docId] === subject);
         hits = summary ? hits.filter((h) => h.chunk.docId === hits[0]?.chunk.docId).slice(0, 3) : bestDocHits(hits, 3);
         const best = hits[0]?.score ?? 0;
         let answer: string;
         if (!hits.length || (!summary && best < 0.22)) { // off-topic questions score ~0.18 with EmbeddingGemma; on-topic ≥0.3
           answer = NOT_FOUND;
         } else {
-          setBusy(null);
-          setGenerating(true);
+          setAskStatus(quizRunningRef.current ? 'Quiz paused · answering your question…' : 'Thinking…');
           const tidy = (txt: string) => (summary ? cleanAnswer(dropNotFoundTail(txt)) : dropNotFoundTail(cleanAnswer(txt)));
           try {
             answer = tidy(
               await generate(
                 summary ? buildSummaryPrompt(part, hits) : buildAnswerPrompt(part, hits),
-                (txt) => setQas((prev) => prev.map((x) => (x.id === id ? { ...x, answer: show(tidy(txt)) } : x))),
-                { maxTokens: summary ? (multi ? 90 : 110) : multi ? 110 : 160 },
+                (txt) => {
+                  setAskStatus(null);
+                  setGenerating(true);
+                  setQas((prev) => prev.map((x) => (x.id === id ? { ...x, answer: show(tidy(txt)) } : x)));
+                },
+                { maxTokens: summary ? (multi ? 90 : 110) : multi ? 110 : 160, kind: 'ask', onWaiting: askWaiting },
               ),
             );
           } finally {
@@ -919,19 +969,24 @@ function Main() {
       setQas((prev) =>
         prev.map((x) => (x.id === id ? { ...x, answer: show() || NOT_FOUND, hits: allHits, subject: subs.join(' · ') || undefined, done: true, ms: Date.now() - t0 } : x)),
       );
-    }, 'llm', () => {
+    }, () => {
       // Failed: say so on the card and put the question back in the box so one tap retries it.
       setQas((prev) => prev.map((x) => (x.id === id ? { ...x, answer: x.answer || '⚠️ Something went wrong while answering. Your question is back in the box: tap Ask to try again.', done: true } : x)));
       setQuestion((cur) => cur || q);
     });
-    setGenerating(false);
     setQas((prev) => prev.map((x) => (x.id === id ? { ...x, done: true } : x)));
   }
 
   // ---------- Quiz ----------
   const [quiz, setQuiz] = useState<QuizCard[]>([]);
   const [quizSize, setQuizSize] = useState(10);
-  const [quizRunning, setQuizRunning] = useState(false); // true while questions are still being written
+  const [quizRunning, setQuizRunningState] = useState(false); // true while questions are still being written
+  const quizRunningRef = useRef(false);
+  const setQuizRunning = (v: boolean) => {
+    quizRunningRef.current = v;
+    setQuizRunningState(v);
+  };
+  const [quizStatus, setQuizStatus] = useState<string | null>(null);
   const [party, setParty] = useState(false);
   // Questions answered wrong are kept (across restarts) for a "Review my mistakes" round.
   const [mistakes, setMistakes] = useState<QuizCard[]>([]);
@@ -978,14 +1033,14 @@ function Main() {
   const celebrated = useRef('');
   useEffect(() => {
     const mcq = quiz.filter((q) => q.options);
-    if (!mcq.length || busy || quizRunning) return; // only once every question has been written
+    if (!mcq.length || quizRunning) return; // only once every question has been written
     const key = mcq.map((q) => q.id).join(',');
     if (celebrated.current === key) return;
     if (mcq.every((q) => q.picked !== undefined && q.picked === q.correct)) {
       celebrated.current = key;
       setParty(true);
     }
-  }, [quiz, busy, quizRunning]);
+  }, [quiz, quizRunning]);
 
   // ---------- Saved history: answers and quizzes are still there after closing the app ----------
   const historyLoaded = useRef(false);
@@ -1034,12 +1089,33 @@ function Main() {
     ]);
   }
 
+  // How many different questions the chosen notes can carry (facts counted once per note, at import; see quizGen.ts).
+  const factCache = useRef<Record<string, number>>({});
+  const factCountOf = (d: NoteDoc) => {
+    if (typeof d.factCount === 'number') return d.factCount;
+    if (factCache.current[d.id] == null) factCache.current[d.id] = countFacts(chunks.filter((c) => c.docId === d.id).map((c) => c.text));
+    return factCache.current[d.id];
+  };
+  const quizDocs = scopeValid === AUTO ? docs : docs.filter((d) => subjectOf(d) === scopeValid);
+  const quizCapacity = capacityFromFacts(quizDocs.reduce((n, d) => n + factCountOf(d), 0));
+  // Notes added before v1.0.16 get their count worked out once and saved.
+  useEffect(() => {
+    const missing = docs.filter((d) => typeof d.factCount !== 'number');
+    if (!missing.length || !chunks.length) return;
+    const counts: Record<string, number> = {};
+    for (const d of missing) counts[d.id] = factCountOf(d);
+    setDocFactCounts(counts).catch((e) => noteError(e, 'facts'));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [docs, chunks]);
+  const quizSizes = [...QUIZ_SIZES.filter((n) => n !== QUIZ_ALL && n < quizCapacity), QUIZ_ALL];
+  const quizSizeShown = quizSize === QUIZ_ALL || quizSize >= quizCapacity ? QUIZ_ALL : quizSize;
+
   const makingQuiz = useRef(false);
   const stopQuiz = useRef(false);
   const [quizNote, setQuizNote] = useState<string | null>(null);
   function stopQuizNow() {
     stopQuiz.current = true;
-    stopGenerating(); // ends the question being written right now
+    stopGenerating('quiz'); // ends the quiz question being written right now (never an answer in Ask)
   }
   async function makeQuiz() {
     if (makingQuiz.current) return; // a double tap must not write two quizzes into one
@@ -1053,90 +1129,75 @@ function Main() {
   }
   async function makeQuizOnce() {
     Keyboard.dismiss();
-    const pool = chunksIn(scopeValid);
+    const pool = chunksIn(scopeValid).filter((c) => !!c && typeof c.text === 'string' && !!c.text.trim());
     if (!pool.length) {
       Alert.alert('No notes yet', 'Add some notes first (or try the sample notes).');
       return;
     }
+    const cap = quizCapacity;
+    if (cap < 1) {
+      Alert.alert('Not enough notes yet', 'These notes are too short for a quiz. Add a few more full sentences and try again.');
+      return;
+    }
+    const target = quizSize === QUIZ_ALL || quizSize > cap ? cap : quizSize;
     setQuiz([]);
     setReviewing(false);
     setQuizNote(null);
     stopQuiz.current = false;
-    await guarded('Writing quiz…', async () => {
-      setQuizRunning(true);
-      const groupOf = scopeValid === AUTO ? (c: StoredChunk) => subjectByDoc[c.docId] ?? '' : undefined;
-      const usable = (c: StoredChunk) => !!c && typeof c.text === 'string' && !!c.text.trim();
-      let excerpts: StoredChunk[];
-      if (quizSize === QUIZ_ALL) {
-        // Every distinct passage the quiz picker would use, once each.
-        const seen = new Set<string>();
-        const groups = groupOf ? new Set(pool.map(groupOf)).size : 1; // round-robin needs this many turns to reach every passage
-        excerpts = quizExcerpts(pool, pool.length * Math.max(1, groups), groupOf).filter((c) => usable(c) && !seen.has(c.id) && !!seen.add(c.id));
-      } else {
-        excerpts = quizExcerpts(pool, quizSize, groupOf).filter(usable);
-      }
-      if (!excerpts.length) throw new Error('Your notes don’t have enough text for a quiz yet. Add a bit more and try again.');
-      const target = quizSize === QUIZ_ALL ? excerpts.length : quizSize;
-      const asked: { q: string; a: string; src: string }[] = [];
-      // Facts (sentences) already used by a question are taken out of the passage for later questions, and
-      // names that run through the whole subject don't count when comparing topics.
-      const usedFacts = new Map<string, string[]>();
-      const common = commonEntities(pool.map((c) => c.text));
-      let made = 0;
-      // A rejected question (duplicate, broken or a wrong answer key) moves on to the next passage. When the
-      // passages run out (short notes), they are visited again with a different focus and a different slice of
-      // the passage, until a total attempt budget is spent. Only then does the quiz end short, with a message.
-      const budget = Math.max(target * 3, 12);
-      const visits = new Map<string, number>();
-      for (let i = 0; i < budget && made < target && !stopQuiz.current; i++) {
-        const ex = excerpts[i % excerpts.length];
-        const round = visits.get(ex.id) ?? 0;
-        visits.set(ex.id, round + 1);
-        setBusy(`Writing question ${made + 1} of ${target}…`);
-        let raw = '';
-        let passage = '';
-        try {
-          passage = quizPassage(ex.text, round, usedFacts.get(ex.id) ?? []);
-          // No "already asked" list in the prompt: tested with the real 1B model, it copies the listed question
-          // back (7 of 9 "stomata" questions). Variety comes from used facts being taken out of the passage, the
-          // revisit angle, and the duplicate check below.
-          raw = await generate(buildMcqPrompt(passage, [], round), () => {}, {
-            maxTokens: 100, // question + 4 short options fit in ~70 tokens; the JSON grammar stops it when done
-            firstTokenMs: 60000,
-            temp: round ? 0.8 : 0.6, // revisits: a little more variety
-            repeatPenalty: 1.0, // JSON repeats quotes and commas by design; a penalty only fights the format
-            jsonSchema: MCQ_SCHEMA,
-          });
-        } catch {
-          continue; // one stuck question never stops the whole quiz
-        }
-        if (stopQuiz.current) break; // Stop tapped: keep the questions already written
-        const parsed = parseMcq(raw);
-        // Answer key checked against the passage: wrong keys are fixed when clear, otherwise the question is skipped.
-        // Checked against the exact text the question was written from (dates and numbers included).
-        const q = parsed ? checkMcqKey(parsed, passage || ex.text) : null;
-        // Same question, same fact or same topic (names/entities) as one already in this quiz: skip it.
-        if (!q || isNearDuplicate(q.question, asked, q.answer, common)) continue;
-        asked.push({ q: q.question, a: q.answer, src: ex.id });
-        const fact = supportingSentence(q.answer, passage || ex.text, q.question);
-        if (fact) usedFacts.set(ex.id, [...(usedFacts.get(ex.id) ?? []), fact]);
-        made++;
-        setQuiz((prev) => [
-          ...prev,
-          { id: makeId('z'), ...q, source: ex, docName: docNames[ex.docId] ?? 'Notes', revealed: false },
-        ]);
-      }
-      if (!made && stopQuiz.current) setQuizNote('Quiz stopped.');
-      if (made && made < target) {
+    setQuizRunning(true);
+    setQuizStatus(`Writing question 1 of ${target}…`);
+    const names = { ...docNames };
+    const subjOf = { ...subjectByDoc };
+    const mixed = scopeValid === AUTO && new Set(pool.map((c) => subjOf[c.docId] ?? '')).size > 1;
+    try {
+      await aiReady('llm', setQuizStatus);
+      // The quiz does not sit in the import/snap line and never blocks Ask: each question waits its turn for the
+      // model, and a question asked meanwhile goes first (this one is then written again).
+      const res = await writeQuiz(
+        pool,
+        target,
+        {
+          generate: async (history, o) => {
+            try {
+              return await generate(history, () => {}, {
+                maxTokens: o.maxTokens,
+                temp: o.temp,
+                jsonSchema: o.jsonSchema,
+                repeatPenalty: 1.0, // JSON repeats quotes and commas by design; a penalty only fights the format
+                firstTokenMs: 60000,
+                kind: 'quiz',
+              });
+            } catch (e) {
+              if (e instanceof Preempted) throw new QuizPreempted();
+              throw e;
+            }
+          },
+          shouldStop: () => stopQuiz.current,
+          onProgress: (made, goal) => setQuizStatus(`Writing question ${made + 1} of ${goal}…`),
+          onQuestion: (q) =>
+            setQuiz((prev) => [
+              ...prev,
+              { id: makeId('z'), question: q.question, answer: q.answer, options: q.options, correct: q.correct, source: q.source, docName: names[q.source.docId] ?? 'Notes', revealed: false },
+            ]),
+        },
+        mixed ? (c) => subjOf[c.docId] ?? '' : undefined,
+      );
+      if (!res.made && res.stopped) setQuizNote('Quiz stopped.');
+      else if (res.made < res.target) {
         setQuizNote(
-          stopQuiz.current
-            ? `Stopped: ${made} of ${target} questions written.`
-            : `Made ${made} of ${target} — your notes on this subject are short, so I couldn’t write more different questions. Add more notes for longer quizzes.`,
+          res.stopped
+            ? `Stopped: ${res.made} of ${res.target} questions written.`
+            : `Made ${res.made} of ${res.target}. The tutor couldn’t write more good, different questions from ${mixed ? 'these notes' : 'these notes on this subject'} this time. Tap New quiz to try again.`,
         );
       }
-      if (!made && !stopQuiz.current) throw new Error('The tutor couldn’t write questions from these notes this time. Please tap Quiz me again.');
-    }, 'llm');
-    setQuizRunning(false);
+      if (!res.made && !res.stopped) throw new Error('The tutor couldn’t write questions from these notes this time. Please tap Quiz me again.');
+    } catch (e: any) {
+      noteError(e, 'quiz');
+      Alert.alert('Quiz', e?.message ?? String(e));
+    } finally {
+      setQuizRunning(false);
+      setQuizStatus(null);
+    }
   }
 
   // ---------- Render ----------
@@ -1335,7 +1396,7 @@ function Main() {
         {tab === 'ask' && (
           <KeyboardSafe onShow={() => setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 80)}>
             {subjects.length > 0 && <SubjectChips subjects={subjects} value={scopeValid} onChange={setScope} />}
-            {qas.length > 0 && !busy && !generating && (
+            {qas.length > 0 && !askActive && (
               <View style={s.histBar}>
                 <Text style={s.small}>{qas.length} saved question{qas.length === 1 ? '' : 's'} · hold one to delete it</Text>
                 <Pressable onPress={() => confirmClear('chat')} hitSlop={8}>
@@ -1364,14 +1425,14 @@ function Main() {
                 </View>
               }
               keyboardShouldPersistTaps="handled"
-              extraData={`${themeKey}${busy}${generating}`}
+              extraData={`${themeKey}${askActive}`}
               renderItem={({ item }) => (
                 <QACard
                   theme={themeKey}
                   qa={item}
                   onLongPress={deleteQa}
-                  onShorter={busy || generating ? undefined : (qa) => followUp(qa, SHORTER)}
-                  onReply={busy || generating ? undefined : setReplyTo}
+                  onShorter={askActive ? undefined : (qa) => followUp(qa, SHORTER)}
+                  onReply={askActive ? undefined : setReplyTo}
                 />
               )}
             />
@@ -1385,6 +1446,14 @@ function Main() {
                 </Pressable>
               </View>
             )}
+            {(!!askStatus || (quizRunning && !askActive)) && (
+              <View style={s.askStatus}>
+                {!!askStatus && <ActivityIndicator size="small" color={C.primary} />}
+                <Text style={[s.small, { flex: 1 }]} numberOfLines={1}>
+                  {askStatus ?? 'A quiz is being written. Ask away: your question goes first.'}
+                </Text>
+              </View>
+            )}
             <View style={s.inputRow}>
               <TextInput
                 style={s.input}
@@ -1392,18 +1461,17 @@ function Main() {
                 onChangeText={setQuestion}
                 placeholder={replyTo ? 'Reply to that answer…' : chunks.length ? 'Ask about your notes…' : 'Add notes first'}
                 placeholderTextColor={C.muted}
-                editable={!busy && !generating}
                 multiline
                 onSubmitEditing={ask}
                 returnKeyType="send"
                 blurOnSubmit
               />
-              {generating ? (
-                <Pressable style={[s.send, { backgroundColor: C.danger }]} onPress={stopGenerating}>
+              {askActive ? (
+                <Pressable style={[s.send, { backgroundColor: C.danger }]} onPress={() => stopGenerating('ask')}>
                   <Text style={s.sendText}>Stop</Text>
                 </Pressable>
               ) : (
-                <Pressable style={[s.send, (!question.trim() || !!busy) && s.btnDisabled]} disabled={!question.trim() || !!busy} onPress={ask}>
+                <Pressable style={[s.send, !question.trim() && s.btnDisabled]} disabled={!question.trim()} onPress={ask}>
                   <Text style={s.sendText}>Ask</Text>
                 </Pressable>
               )}
@@ -1421,29 +1489,36 @@ function Main() {
             )}
             <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', gap: 8, marginBottom: 10, alignItems: 'center' }}>
               <Text style={s.small}>Questions:</Text>
-              {QUIZ_SIZES.map((n) => (
+              {quizSizes.map((n) => (
                 <Pressable
                   key={n}
                   onPress={() => setQuizSize(n)}
-                  disabled={!!busy}
-                  style={[s.sizeChip, quizSize === n && s.sizeChipOn]}
+                  disabled={quizRunning || quizCapacity < 1}
+                  style={[s.sizeChip, quizSizeShown === n && s.sizeChipOn, (quizRunning || quizCapacity < 1) && { opacity: 0.6 }]}
                 >
-                  <Text style={[s.sizeChipText, quizSize === n && s.sizeChipTextOn]}>{n === QUIZ_ALL ? 'All' : n}</Text>
+                  <Text style={[s.sizeChipText, quizSizeShown === n && s.sizeChipTextOn]}>{n === QUIZ_ALL ? `All (${quizCapacity})` : n}</Text>
                 </Pressable>
               ))}
             </View>
+            {chunks.length > 0 && (
+              <Text style={[s.small, { textAlign: 'center', marginBottom: 8 }]}>
+                {quizCapacity > 0
+                  ? `Your notes can make about ${quizCapacity} different question${quizCapacity === 1 ? '' : 's'}${scopeValid === AUTO ? '' : ` on ${scopeValid}`}.`
+                  : 'These notes are too short for a quiz yet. Add a few more full sentences.'}
+              </Text>
+            )}
             {quiz.some((q) => q.picked !== undefined) && (
               <Text style={s.score}>
                 Score: {quiz.filter((q) => q.picked !== undefined && q.picked === q.correct).length} / {quiz.filter((q) => q.picked !== undefined).length}
                 {!quizRunning && quiz.every((q) => !q.options || q.picked !== undefined) ? ` 🎉 Done!` : ''}
               </Text>
             )}
-            {!!quizNote && !busy && <Text style={[s.small, { textAlign: 'center', marginBottom: 4 }]}>{quizNote}</Text>}
-            <Pressable style={[s.btn, (!!busy || !chunks.length) && s.btnDisabled]} disabled={!!busy || !chunks.length} onPress={makeQuiz}>
-              <Text style={s.btnText}>{quizRunning ? 'Writing quiz…' : busy ? 'Please wait…' : quiz.length ? 'New quiz' : 'Quiz me'}</Text>
+            {!!quizNote && !quizRunning && <Text style={[s.small, { textAlign: 'center', marginBottom: 4 }]}>{quizNote}</Text>}
+            <Pressable style={[s.btn, (quizRunning || !chunks.length || quizCapacity < 1) && s.btnDisabled]} disabled={quizRunning || !chunks.length || quizCapacity < 1} onPress={makeQuiz}>
+              <Text style={s.btnText}>{quizRunning ? 'Writing quiz…' : quiz.length ? 'New quiz' : 'Quiz me'}</Text>
             </Pressable>
             {mistakes.length > 0 && (
-              <Pressable style={[s.btnGhost, !!busy && s.btnDisabled]} disabled={!!busy} onPress={startReview}>
+              <Pressable style={[s.btnGhost, quizRunning && s.btnDisabled]} disabled={quizRunning} onPress={startReview}>
                 <Text style={s.btnGhostText}>Review my mistakes ({mistakes.length})</Text>
               </Pressable>
             )}
@@ -1452,12 +1527,12 @@ function Main() {
                 Mistakes round: get one right and it leaves your list. {mistakes.length ? `${mistakes.length} left.` : 'All mastered! 🌟'}
               </Text>
             )}
-            {quiz.length > 0 && !busy && (
+            {quiz.length > 0 && !quizRunning && (
               <Pressable onPress={() => confirmClear('quiz')} hitSlop={8} style={{ alignSelf: 'center', marginTop: 10 }}>
                 <Text style={s.clearLink}>Clear quiz</Text>
               </Pressable>
             )}
-            {!quiz.length && !busy && (
+            {!quiz.length && !quizRunning && (
               <Text style={[s.small, { textAlign: 'center', marginTop: 12 }]}>
                 {chunks.length ? `Pick an answer A to D for each question from ${scopeValid === AUTO ? 'all your notes' : scopeValid}.` : 'Add notes first.'}
               </Text>
@@ -1512,28 +1587,23 @@ function Main() {
             {quizRunning && (
               <View style={[s.card, { flexDirection: 'row', alignItems: 'center', gap: 10 }]}>
                 <ActivityIndicator color={C.primary} />
-                <Text style={[s.body, { flex: 1 }]}>{busy || 'Writing the next question…'}</Text>
+                <Text style={[s.body, { flex: 1 }]}>{askActive ? 'Quiz paused · answering your question in Ask…' : quizStatus || 'Writing the next question…'}</Text>
                 <Pressable onPress={stopQuizNow} hitSlop={10} accessibilityLabel="Stop writing the quiz">
                   <Text style={{ color: C.danger, fontWeight: '900' }}>Stop</Text>
                 </Pressable>
               </View>
             )}
             {!!quizNote && !quizRunning && quiz.length > 0 && <Text style={[s.small, { textAlign: 'center', marginTop: 4 }]}>{quizNote}</Text>}
-            {!!busy && <View style={{ height: 70 }} />}
+            {(!!busy || quizRunning) && <View style={{ height: 70 }} />}
           </ScrollView>
         )}
       </View>
 
       {party && <Confetti onDone={() => setParty(false)} />}
-      {busy && (
-        <View style={s.busy}>
+      {busy && !(tab === 'ask' && keyboardOpen) && (
+        <View style={[s.busy, tab === 'ask' && { bottom: 140 }]} pointerEvents="none">
           <ActivityIndicator color="#fff" />
           <Text style={s.busyText}>{busy}{queued > 0 ? `  ·  ${queued} more lined up` : ''}</Text>
-          {quizRunning && (
-            <Pressable onPress={stopQuizNow} hitSlop={10} accessibilityLabel="Stop writing the quiz">
-              <Text style={{ color: '#fff', fontWeight: '900' }}>Stop</Text>
-            </Pressable>
-          )}
         </View>
       )}
 
@@ -1816,12 +1886,17 @@ function cleanCards(list: any): QuizCard[] {
   const out: QuizCard[] = [];
   for (const z of list) {
     if (!z || typeof z !== 'object' || typeof z.question !== 'string' || !z.question.trim()) continue;
-    let options: string[] | undefined = Array.isArray(z.options) ? z.options.filter((o: any) => typeof o === 'string') : undefined;
+    // Strings only, in place (filtering would shift the saved answer index).
+    const rawOpts: any[] | undefined = Array.isArray(z.options) ? z.options : undefined;
+    let options: string[] | undefined = rawOpts && rawOpts.every((o) => typeof o === 'string') ? rawOpts.slice() : undefined;
     if (options && options.length < 2) options = undefined;
     const inRange = (n: any) => options && Number.isInteger(n) && n >= 0 && n < options.length;
-    const answer = typeof z.answer === 'string' ? z.answer : '';
+    const rawAnswer = typeof z.answer === 'string' ? z.answer : '';
     let correct: number | undefined = undefined;
-    if (options) correct = inRange(z.correct) ? z.correct : Math.max(0, options.indexOf(answer));
+    if (options) correct = inRange(z.correct) ? z.correct : Math.max(0, options.indexOf(rawAnswer));
+    // v1.0.15 quizzes could carry doubled labels ("A. B. Online security"): clean them for the mistakes round too.
+    if (options) options = options.map((o) => stripOptionMarker(o) || o);
+    const answer = options && correct != null ? options[correct] : stripOptionMarker(rawAnswer) || rawAnswer;
     out.push({
       id: typeof z.id === 'string' && z.id ? z.id : makeId('z'),
       question: z.question,
@@ -2175,6 +2250,7 @@ const makeStyles = () => StyleSheet.create({
   answerLabel: { fontSize: 12, fontWeight: '700', color: C.muted, marginTop: 14, marginBottom: 4, textTransform: 'uppercase' },
   busy: { position: 'absolute', left: 16, right: 16, bottom: 78, backgroundColor: 'rgba(59,15,120,0.95)', borderRadius: 20, padding: 12, flexDirection: 'row', alignItems: 'center', gap: 10 },
   busyText: { color: '#fff', fontSize: 14, flex: 1 },
+  askStatus: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 14, paddingVertical: 6, backgroundColor: C.card, borderTopWidth: 1, borderTopColor: C.border },
   tabs: { flexDirection: 'row', borderTopWidth: 2, borderTopColor: C.border, backgroundColor: C.card, paddingBottom: 6, paddingTop: 2, borderTopLeftRadius: 22, borderTopRightRadius: 22 },
   tab: { flex: 1, alignItems: 'center', paddingVertical: 8 },
   tabIcon: { fontSize: 24 },

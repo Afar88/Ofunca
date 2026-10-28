@@ -7,14 +7,17 @@ export function keyboardPad(containerBottom: number | null, keyboardTop: number 
   return Math.max(0, Math.round(containerBottom - keyboardTop));
 }
 
-/** Keyboard top from the native IME inset: windowHeight - imeHeight (dp), or null when the keyboard is closed. */
-export function imeTop(height: number | null | undefined, windowHeight: number | null | undefined): number | null {
+/** Keyboard top from the native IME inset, in the same coordinates as measureInWindow():
+ *  windowHeight - imeHeight - offsetTop (dp), or null when the keyboard is closed. offsetTop is the top of the
+ *  visible frame (the status bar height), which React Native leaves out of measureInWindow() on Android. */
+export function imeTop(height: number | null | undefined, windowHeight: number | null | undefined, offsetTop: number | null | undefined = 0): number | null {
   if (typeof height !== 'number' || !(height > 1) || typeof windowHeight !== 'number' || !(windowHeight > 0)) return null;
-  return Math.max(0, windowHeight - height);
+  const off = typeof offsetTop === 'number' && offsetTop > 0 && offsetTop < 200 ? offsetTop : 0;
+  return Math.max(0, windowHeight - height - off);
 }
 
-/** Small gap kept between the input bar and the keyboard, so nothing is ever tucked under its edge. */
-export const KEYBOARD_GAP = 6;
+/** Gap kept between the input bar and the keyboard (and its suggestion strip), so nothing is tucked under its edge. */
+export const KEYBOARD_GAP = 10;
 
 /** Top edge of the keyboard in window coordinates, or null when it is hidden.
  *  Source of truth on Android: the native "ofuncaImeChange" event (plugins/withImeInsets.js), which fires on EVERY
@@ -41,9 +44,9 @@ export function useKeyboardTop(onShow?: () => void): number | null {
       if (h <= 0) return apply(null);
       apply(y);
     };
-    const onIme = (e: { height?: number; windowHeight?: number }) => {
+    const onIme = (e: { height?: number; windowHeight?: number; offsetTop?: number }) => {
       nativeSeen.current = true;
-      apply(imeTop(e?.height, e?.windowHeight));
+      apply(imeTop(e?.height, e?.windowHeight, e?.offsetTop));
     };
     const subs = [
       DeviceEventEmitter.addListener('ofuncaImeChange', onIme),

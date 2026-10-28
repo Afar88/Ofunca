@@ -10,6 +10,7 @@ export type NoteDoc = {
   chunkCount: number;
   charCount: number;
   subject?: string; // e.g. "Biology". Questions can be limited to one subject so notes never mix.
+  factCount?: number; // distinct quiz-able facts, counted once when the note is added (v1.0.16)
 };
 
 export const GENERAL = 'General';
@@ -45,7 +46,15 @@ async function ensureDir() {
   if (!info.exists) await FS.makeDirectoryAsync(DIR, { intermediates: true });
 }
 
-export async function loadDB(): Promise<DB> {
+let loading: Promise<DB> | null = null;
+/** One read at a time: two screens asking at startup must share one library object. */
+export function loadDB(): Promise<DB> {
+  if (cache) return Promise.resolve(cache);
+  if (!loading) loading = readDB().finally(() => (loading = null));
+  return loading;
+}
+
+async function readDB(): Promise<DB> {
   if (cache) return cache;
   await ensureDir();
   const info = await FS.getInfoAsync(FILE);
@@ -69,14 +78,35 @@ export async function loadDB(): Promise<DB> {
   return cache;
 }
 
-async function save() {
-  if (!cache) return;
-  await ensureDir();
-  const tmp = FILE + '.tmp';
-  await FS.writeAsStringAsync(tmp, JSON.stringify(cache));
-  await FS.moveAsync({ from: tmp, to: FILE }).catch(async () => {
-    await FS.writeAsStringAsync(FILE, JSON.stringify(cache));
-  });
+// Saves run one after another: two at once (a note being indexed while another is moved or removed) wrote the
+// same temp file and could leave a broken library (v1.0.16).
+let saving: Promise<void> = Promise.resolve();
+function save(): Promise<void> {
+  const job = async () => {
+    if (!cache) return;
+    await ensureDir();
+    const tmp = FILE + '.tmp';
+    await FS.writeAsStringAsync(tmp, JSON.stringify(cache));
+    await FS.moveAsync({ from: tmp, to: FILE }).catch(async () => {
+      await FS.writeAsStringAsync(FILE, JSON.stringify(cache));
+    });
+  };
+  const p = saving.then(job, job);
+  saving = p.catch(() => {});
+  return p;
+}
+
+/** Saves fact counts for notes added before v1.0.16 (worked out once, then kept). */
+export async function setDocFactCounts(counts: Record<string, number>) {
+  const db = await loadDB();
+  let changed = false;
+  for (const d of db.docs) {
+    if (typeof counts[d.id] === 'number' && d.factCount !== counts[d.id]) {
+      d.factCount = counts[d.id];
+      changed = true;
+    }
+  }
+  if (changed) await save();
 }
 
 export async function addDoc(doc: NoteDoc, chunks: StoredChunk[]) {
@@ -127,9 +157,18 @@ export async function loadHistory<T = any>(): Promise<T | null> {
     return null;
   }
 }
-export async function saveHistory(data: unknown) {
-  try {
-    await ensureDir();
-    await FS.writeAsStringAsync(HISTORY, JSON.stringify(data));
-  } catch {}
+let historySaving: Promise<void> = Promise.resolve();
+/** Written to a temp file first, one save at a time, so closing the app mid-save never leaves broken history. */
+export function saveHistory(data: unknown): Promise<void> {
+  const job = async () => {
+    try {
+      await ensureDir();
+      const tmp = HISTORY + '.tmp';
+      await FS.writeAsStringAsync(tmp, JSON.stringify(data));
+      await FS.moveAsync({ from: tmp, to: HISTORY }).catch(() => FS.writeAsStringAsync(HISTORY, JSON.stringify(data)));
+    } catch {}
+  };
+  const p = historySaving.then(job, job);
+  historySaving = p;
+  return p;
 }

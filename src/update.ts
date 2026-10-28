@@ -30,11 +30,18 @@ export async function checkForUpdate(manual = false) {
       signal: ctl.signal,
     });
     clearTimeout(t);
-    await FS.writeAsStringAsync(STAMP, JSON.stringify({ ...last, at: Date.now() }));
-    if (!r.ok) {
-      if (manual) Alert.alert('Could not check', 'Connect to the internet and try again.');
+    if (r.status === 404) {
+      // no release published yet: nothing newer than this build
+      await FS.writeAsStringAsync(STAMP, JSON.stringify({ ...last, at: Date.now() })).catch(() => {});
+      if (manual) Alert.alert('You are up to date ✅', `Ofunca ${CURRENT} is the newest version.`);
       return;
     }
+    if (!r.ok) {
+      // rate-limited or GitHub trouble: don't wait a whole day before trying again
+      if (manual) Alert.alert('Could not check', r.status === 403 || r.status === 429 ? 'GitHub is busy right now. Try again in a little while.' : 'Connect to the internet and try again.');
+      return;
+    }
+    await FS.writeAsStringAsync(STAMP, JSON.stringify({ ...last, at: Date.now() })).catch(() => {});
     const rel: any = await r.json();
     const tag = String(rel?.tag_name ?? '');
     if (!tag || !newer(tag, CURRENT) || (!manual && last.skip === tag)) {
@@ -42,12 +49,12 @@ export async function checkForUpdate(manual = false) {
       return;
     }
     const apk = (rel.assets ?? []).find((a: any) => String(a?.name ?? '').endsWith('.apk'));
-    const url: string = apk?.browser_download_url ?? rel.html_url;
+    const url: string = apk?.browser_download_url ?? rel.html_url ?? `https://github.com/${REPO}/releases`;
     Alert.alert(
       'New Ofunca update 🎉',
       `Version ${tag.replace(/^v/i, '')} is out (you have ${CURRENT}). Download it, then install it over this one. Your notes stay.`,
       [
-        { text: 'Skip this version', style: 'cancel', onPress: () => FS.writeAsStringAsync(STAMP, JSON.stringify({ at: Date.now(), skip: tag })).catch(() => {}) },
+        { text: 'Skip this version', style: 'cancel', onPress: () => { FS.writeAsStringAsync(STAMP, JSON.stringify({ at: Date.now(), skip: tag })).catch(() => {}); } },
         { text: 'Later' },
         { text: 'Download', onPress: () => Linking.openURL(url).catch(() => {}) },
       ],

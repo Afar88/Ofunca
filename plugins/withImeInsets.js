@@ -27,6 +27,12 @@ const MEMBERS = `
       val map = com.facebook.react.bridge.Arguments.createMap()
       map.putDouble("height", imePx / d)
       map.putDouble("windowHeight", decor.height / d)
+      // React Native's measureInWindow() counts from the top of the visible frame (below the status bar), while the
+      // IME inset counts from the screen edge. Send that offset so JS compares like with like (v1.0.16: the Ask
+      // bar sat a status-bar height too low and its bottom was hidden behind the keyboard).
+      val vis = android.graphics.Rect()
+      decor.getWindowVisibleDisplayFrame(vis)
+      map.putDouble("offsetTop", vis.top / d)
       ctx.emitDeviceEvent("ofuncaImeChange", map)
       ofuncaLastIme = imePx
       ofuncaPendingIme = -1

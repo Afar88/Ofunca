@@ -20,11 +20,11 @@ Students in places with expensive or unreliable data, like much of Nigeria where
 | **Snap notes** | Opens Ofunca's own full-screen camera (built in with `expo-camera`, so Android never closes the app for a separate camera app and the photo can't get lost). Page-frame guides, flash, a big shutter, a Gallery shortcut, then a crop screen: drag the four corner handles (or the whole box) to trim the photo to just your notes, with **Retake** or **Read it**. Gallery photos go through the same crop. **QVAC OCR** (bundled in the APK, no extra download) reads the photo on-device; the text opens in an editable box with a low-confidence warning. If camera access is refused, Snap goes straight to the gallery |
 | **Subjects** | Pick an existing subject from the chips or type a new one. Nothing is pre-filled: chips stay separate from the typing box, and an empty choice files notes under *General*. Subject comes above Title in the Paste/Snap editor |
 | **No size limits** | No caps on PDF pages, pasted text, subjects or library size. Very large imports simply take longer to read and index |
-| **Job queue** | Snap, Import and Paste always stay tappable; jobs queue one after another so the phone never runs two AI jobs at once |
+| **Job queue** | Snap, Import and Paste always stay tappable; jobs queue one after another. Ask and Quiz are not in that line: they share the tutor model through a priority lock, so Ask always works, even while a quiz is being written (v1.0.16) |
 | **On-device indexing** | Notes are split into overlapping, sentence-aware passages and embedded with **EmbeddingGemma 300M** via QVAC `embed()` |
 | **Ask** | Hybrid search (cosine + keyword boost) finds the top passages; **Llama 3.2 1B Instruct** via QVAC `completion()` streams an answer citing `[1]`, `[2]` with "Where from?" source cards. A watchdog stops stalled answers and puts the question back for a retry |
 | **Honest "not in your notes"** | Off-topic questions are refused instead of made up |
-| **Quiz** | Objective A to D questions (5, 10, 15, 20, 50 or **All**, one per usable passage) from one subject or a mix, with a **Stop** button while it writes, with instant right/wrong feedback, haptics and a score |
+| **Quiz** | Objective A to D questions from one subject or a mix. The quiz screen says how many different questions your notes can make (*"Your notes can make about N questions"*) and only offers sizes up to that, with **All (N)**. One question per distinct fact in your notes, short options of similar length, the right letter spread evenly. **Stop** button while it writes, instant right/wrong feedback, haptics and a score |
 | **Review my mistakes** | Wrong answers are saved (no cap; each question once) and all of them are replayed in a shuffled review round; get one right and it leaves the list |
 | **History** | Ask and Quiz history survive app restarts |
 | **Intro** | The bare Ofunca O pops in (the launch screen shows the same bare O, so there's no jump), then its purple graduation hat streaks in from the top corner like a shooting star with a sparkly tail, rolls and loops around the O, swells as it climbs and drops onto the O with a bounce, completing the logo. The letters of *Ofunca* then fall in one by one, followed by the tagline *Study. Anywhere. No connection.* The full show (about 5 seconds, holding the finished logo for a moment) plays on every launch while the app loads (since v1.0.12); tap anywhere to skip it |
@@ -135,9 +135,42 @@ From a phone test of v1.0.14 on a Redmi Note 13.
 - **No more near-duplicate questions.** Repeats are now caught by topic, not just wording: shared topic words (with simple stemming, so *relationship/relationships*), the same pair of names (two OLX–Jiji questions), and the same correct answer all count. Names that run through the whole subject (e.g. "Public Affairs") don't count as a match. Each accepted question's source sentence is taken out of the passage for later questions, so the next question has to use a different fact. The "already asked" list is no longer put in the prompt: tested with the real model, the 1B model copied the listed question back (7 of 9 attempts asked about stomata); without it questions spread across passages. Check: `node --experimental-strip-types scripts/check-mcq-key.ts`.
 - **Trade-off:** the stricter checks throw away more of the small model's weak questions, so a quiz may need more attempts (the existing budget of 3× the questions, at least 12, still applies and the app still says "Made X of Y" when notes are short).
 
+## Fixes and features (v1.0.16)
+
+From a phone test of v1.0.15 on a Redmi Note 13 (GPU), plus a full code audit.
+
+**Quiz questions**
+- **No more doubled option labels** ("A. B. Online security measures", "C. A. User retention strategy", "A. 3. Negative media coverage"). Letters, numbers and list markers the model copies from the notes ("A.", "b)", "(c)", "3.", "iv)", "a -", "Option B:", "Answer:", bullets, even repeated) are stripped from every option before the app adds its own A–D. Numbers that are part of the answer ("2.5 million") are kept. The correct answer is placed after cleaning, so the key always points at the right option. Old saved quizzes and the mistakes list are cleaned the same way when they load.
+- **The correct answer no longer gives itself away by length.** The prompt now asks for 1–6 word options of similar length and shows the model one worked example; the JSON grammar caps every option at 60 characters (a paragraph can't be written), and in code the correct answer may be at most 1.8× the average wrong option (and never over 10 words). A long answer is cut to its first clause when that still makes sense ("Trust must be a core product feature: digital businesses need…" → its first part); otherwise the question is thrown away. Over-long wrong options are trimmed or dropped, options cut off by the cap are dropped, a wrong option that contains the whole right answer (two right answers) is dropped, and Title Case options are put in normal sentence case so all four look alike. A trailing full stop on only one option is removed too.
+- **Right letter spread evenly.** The correct answer's position comes from a shuffled bag of A/B/C/D, so over a quiz each letter is the answer about equally often.
+- **One question per fact.** When a note is added, Ofunca splits it (instantly, no AI) into distinct facts: full sentences that state something, and short lists such as *"Challenges of Public Affairs: Financial constraints; Political interference; …"* (numbered, lettered and bulleted lists are found even after line breaks are lost, together with their heading). Overlapping passages and repeated sentences count once. Each quiz question is written from one fact plus its neighbouring sentences, so questions cover different things, the prompt is much shorter, and the answer key is checked against that fact. A list becomes *"Which of these is one of the challenges of public affairs?"* with a listed item as the answer and three model-written wrong answers that are checked not to be on the list.
+- **Quiz capacity estimate.** The fact count is saved with each note when it is added (notes added before v1.0.16 are counted once, then saved). The quiz screen shows *"Your notes can make about N questions"* for the chosen subject or Mix all, only offers sizes below N, and the last chip reads **All (N)**. N is deliberately conservative (60% of the facts, from tests with the real model on short lecture notes), and if the notes are too short for even one question the Quiz button explains that instead of failing.
+- **Requested count met.** Every fact gets up to three tries with a different angle, spread out (all facts first, then the ones that failed), within a budget of 4× the questions (at least 12). Mix all takes turns between subjects. In a sandbox test with the real Llama 3.2 1B model on two short notes (Public Affairs + an OLX digital-marketing case study, 19 facts → "about 11 questions"), 11 of 11 were delivered. The "Made X of Y" note now only appears when the model really couldn't write more good, different questions.
+- **Faster per question.** Shorter prompts (one fact instead of a whole passage), capped option lengths (no wasted tokens on paragraph answers or cut-off JSON), list questions where the model writes only three short wrong answers (50 tokens), and fewer thrown-away attempts thanks to the fixes above. Questions still appear one by one while you answer the earlier ones. Duplicate checks also ignore words that run through the whole subject ("public", "affairs"), which used to reject good questions.
+
+**Ask always works**
+- **Ask no longer freezes while a quiz is being written.** Before, the quiz ran in the same one-job-at-a-time line as imports, so the Ask box was locked until the whole quiz finished. Now Ask and Quiz have their own state, and the on-device model is shared through a small priority lock (`src/llmLock.ts`): a question you ask goes first. If a quiz question is being written at that moment it is paused (stopped and written again right after your answer, without counting as a failed try), and the quiz carries on by itself. The Ask tab shows *"Quiz paused · answering your question…"* and the quiz row shows the same. The Ask box is always editable; you can type the next question while an answer is written. Searches made while a note is being indexed slip in between indexing batches.
+- **Other global locks removed.** The quiz screen's buttons no longer depend on an import or snap being in progress, the floating progress bar no longer sits over the Ask box (and ignores touches), and Shorter / Reply / Clear only wait for the answer being written. Snap notes, which takes the tutor model out of memory for a moment, waits for an answer being written and pauses a quiz instead of breaking it. Switching CPU/GPU while something is running now says so instead of silently doing nothing.
+
+**Keyboard**
+- **Ask bar fully above the keyboard.** On the Redmi the bottom of the Ask box was hidden behind the keyboard's suggestion strip by about a status bar's height: React Native measures the screen from below the status bar, while the keyboard height counts from the screen edge. The native keyboard listener now also sends that offset, so both are compared in the same coordinates, and the gap above the keyboard is 10 dp (was 6).
+
+**Audit fixes**
+- Library saves run one at a time (a note being indexed while another was moved or removed could write the same temp file twice); history is saved through a temp file too, so closing the app mid-save can't corrupt it; the library is read once even when two screens ask at startup.
+- Stopping an Ask answer no longer stops a quiz question and vice versa (each request has its own stop); a stop while waiting for the model returns at once; after a stop or a stall the engine gets a moment to finish before the next job starts.
+- The warm-up run at startup waits its turn for the model instead of racing the first question.
+- Check for updates: "no release published yet" (404) now says you're up to date instead of "connect to the internet"; a GitHub rate limit says so and doesn't block the next check for a day.
+- Quiz cards from old versions with non-text options are skipped safely instead of shifting the answer index.
+- New logic checks run in CI before every build: `scripts/check-quiz.ts` (labels, lengths, letters, facts, capacity, the lock and quiz resume, keyboard offset), plus the existing answer-key and keyboard checks.
+
+**Trade-offs**
+- Questions whose correct answer can't be shortened without losing its meaning are skipped, and the capacity estimate is kept low on purpose, so very short notes offer fewer questions than before (but the number offered is delivered).
+- When you ask something while a quiz question is being written, that question's work so far is thrown away and redone after your answer.
+- The keyboard offset fix could not be tried on a real phone from the build machine; if a phone measures differently, the worst case is a slightly larger gap above the keyboard, never a hidden box.
+
 ## Install (Android phone, arm64, Android 10+)
 
-1. Download `Ofunca-v1.0.6.apk` to the phone.
+1. Download `Ofunca-v1.0.16.apk` to the phone.
 2. Open it. If asked, allow your browser or file manager to *install unknown apps*, then tap **Install**.
 3. Open **Ofunca**. On **Wi‑Fi**, tap **Download AI models** (≈1.05 GB, one time; the photo reader is built into the app).
 4. When you see **"All set!"** you can switch on airplane mode. Everything keeps working.
@@ -168,7 +201,9 @@ src/qvac.ts                QVAC: model list + mirrors, cache check, load, embed,
 src/modelDownload.ts       Resilient download: cache check, HTTPS mirror with resume, registry fallback, retries
 src/SnapCamera.tsx         in-app camera for Snap notes (frame guides, flash, retake)
 src/ocr.ts                 QVAC OCR "Snap notes" with line grouping and confidence
-src/rag.ts                 hybrid retrieval, grounded answer prompt, quiz prompts and parsing
+src/rag.ts                 hybrid retrieval, grounded answer prompt, answer-key check, duplicate check
+src/quizGen.ts             quiz engine: facts + capacity, option cleaning/length balance, one question per fact
+src/llmLock.ts             priority lock: Ask goes before quiz questions, Snap pauses a quiz
 src/chunk.ts               sentence-aware overlapping chunker
 src/store.ts               on-device library (docs + passages + vectors)
 src/pdf/                   offline pdf.js WebView extractor (generated page + bridge)

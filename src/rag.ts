@@ -400,8 +400,12 @@ export type AskedQ = { q: string; a?: string; src?: string };
 export function isNearDuplicate(q: string, prior: (string | AskedQ)[], answer = '', common: Set<string> = new Set()): boolean {
   const n = normQ(q);
   if (!n) return true;
-  const t = qTokens(q);
-  const tAll = qTokens(`${q} ${answer}`);
+  // Words that run through the whole subject ("public", "affairs" in Public Affairs notes) say nothing about two
+  // questions being on the same topic, so they are left out of the comparison (v1.0.16).
+  const drop = (set: Set<string>) => new Set([...set].filter((w) => !common.has(w)));
+  const qTok = (x: string) => drop(qTokens(x));
+  const t = qTok(q);
+  const tAll = qTok(`${q} ${answer}`);
   const ent = entities(`${q} ${answer}`);
   const an = normQ(answer);
   const stem = n.split(' ').slice(0, 6).join(' ');
@@ -412,7 +416,7 @@ export function isNearDuplicate(q: string, prior: (string | AskedQ)[], answer = 
     if (pn === n) return true;
     if (stem.split(' ').length >= 4 && pn.split(' ').slice(0, 6).join(' ') === stem) return true; // same question opening
     if (an && pa && an.length > 3 && normQ(pa) === an) return true; // same correct answer = same fact
-    const pt = qTokens(p);
+    const pt = qTok(p);
     if (t.size && pt.size) {
       let both = 0;
       for (const w of t) if (pt.has(w)) both++;
@@ -426,7 +430,7 @@ export function isNearDuplicate(q: string, prior: (string | AskedQ)[], answer = 
     for (const [e, run] of ent) if (pe.has(e) && !common.has(e)) runs.add(run);
     if (runs.size >= 2) return true;
     // Question + answer together share most of their topic words with an earlier question + answer.
-    const pAll = qTokens(`${p} ${pa}`);
+    const pAll = qTok(`${p} ${pa}`);
     if (tAll.size && pAll.size) {
       let both = 0;
       for (const w of tAll) if (pAll.has(w)) both++;
