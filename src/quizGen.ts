@@ -28,7 +28,7 @@ const factKey = (t: string) => contentWords(t).slice(0, 14).join(' ');
 const MARKER = /(?:^|\s)\(?(\d{1,2}|[a-hA-H]|i{1,3}|iv|v|vi{1,3}|ix|x|[•▪●◦*]|-(?=\s))[.)]?\s+/g;
 const ROMAN = ['i', 'ii', 'iii', 'iv', 'v', 'vi', 'vii', 'viii', 'ix', 'x'];
 
-export type Fact = { text: string; context: string; chunkId: string; kind: 'sentence' | 'list' };
+export type Fact = { text: string; context: string; chunkId: string; kind: 'sentence' | 'list'; lead?: string };
 
 type Mark = { at: number; end: number; label: string };
 /** True when `b` continues the numbering of `a` (1→2, a→b, ii→iii, •→•). */
@@ -104,7 +104,7 @@ export function mergeChunks(texts: string[]): string {
   return acc;
 }
 
-type RawFact = { text: string; context: string; kind: 'sentence' | 'list' };
+type RawFact = { text: string; context: string; kind: 'sentence' | 'list'; lead?: string };
 
 /** Distinct facts of one note's full text: full sentences that state something, and short lists. */
 export function factsOfText(full: string): RawFact[] {
@@ -156,7 +156,9 @@ export function factsOfText(full: string): RawFact[] {
   const sents = prose.flatMap((p) => sentencesOf(p)).map((x) => x.replace(LABEL, '').trim()).filter(Boolean);
   sents.forEach((x, i) => {
     if (!isFactSentence(x)) return;
-    out.push({ text: x.length > 360 ? x.slice(0, 360).replace(/\s+\S*$/, '') + '…' : x, context: [sents[i - 1], sents[i + 1]].filter(Boolean).join(' ').slice(0, 400), kind: 'sentence' });
+    // "It involves monitoring public opinion…": the model needs the sentence before to know what "it" is.
+    const lead = /^(?:it|they|this|these|that|those|he|she|its|their|such)\b/i.test(x) && sents[i - 1] ? sents[i - 1].slice(0, 300) : undefined;
+    out.push({ text: x.length > 360 ? x.slice(0, 360).replace(/\s+\S*$/, '') + '…' : x, context: [sents[i - 1], sents[i + 1]].filter(Boolean).join(' ').slice(0, 400), kind: 'sentence', lead });
   });
   // Distinct only: the same sentence twice, or one that repeats 80% of another's words, counts once.
   const seen: Set<string>[] = [];
@@ -202,7 +204,7 @@ export function countFacts(texts: string[]): number {
 
 /** Share of facts the quiz can reliably turn into good, different questions (measured with the real model on
  *  short lecture notes; kept low on purpose so the promised number is met). */
-export const CAPACITY_YIELD = 0.6;
+export const CAPACITY_YIELD = 0.55;
 
 /** How many different questions a number of facts supports (conservative). */
 export function capacityFromFacts(nFacts: number): number {
@@ -348,6 +350,10 @@ export function parseFactMcq(raw: string, slot?: number, rand: () => number = Ma
   const qn = ` ${q.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()} `;
   const an = bal.answer.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
   if (an.split(' ').length >= 2 && qn.includes(` ${an} `)) return null; // the question gives the answer away
+  // "Why does X happen when oxygen is scarce?" -> "X happens when oxygen is scarce": the answer only repeats the question
+  const aw = contentWords(bal.answer);
+  const qw = new Set(contentWords(q));
+  if (aw.length >= 2 && aw.filter((w) => qw.has(w) || qw.has(w.replace(/s$/, '')) || qw.has(w + 's')).length / aw.length >= 0.75) return null;
   const wrong = bal.wrong.slice();
   for (let i = wrong.length - 1; i > 0; i--) {
     const j = Math.floor(rand() * (i + 1));
@@ -431,7 +437,7 @@ export function parseListMcq(raw: string, f: Pick<Fact, 'text'>, pickItem: numbe
   };
   const answer = items[((pickItem % items.length) + items.length) % items.length];
   const wrongRaw = (Array.isArray(o?.wrong) ? o.wrong : [])
-    .filter((x: any) => typeof x === 'string')
+    .filter((x: any) => typeof x === 'string' && x.trim().length < WRONG_ONLY_SCHEMA.properties.wrong.items.maxLength - 2) // cut off by the cap
     .map((x: string) => sentenceCase(stripOptionMarker(x), f.text))
     .filter((x: string) => x && !onList(x));
   const bal = balanceOptions(answer, wrongRaw);
@@ -448,14 +454,14 @@ export function parseListMcq(raw: string, f: Pick<Fact, 'text'>, pickItem: numbe
 const EXAMPLE_NOTE = 'Photosynthesis takes place in the chloroplasts of plant cells, using light energy.';
 const EXAMPLE_JSON = '{"question":"Where does photosynthesis take place?","answer":"In the chloroplasts","wrong":["In the nucleus","In the mitochondria","In the cell wall"]}';
 
-export function buildFactMcqPrompt(f: Pick<Fact, 'text' | 'context' | 'kind'>, attempt = 0) {
+export function buildFactMcqPrompt(f: Pick<Fact, 'text' | 'context' | 'kind' | 'lead'>, attempt = 0) {
   const system =
     'You write one multiple-choice exam question from a student\'s notes. The question ends with "?" and asks directly, like an exam; never mention "the notes" or "the text". ' +
     'The correct answer is stated in the notes. The three wrong answers are believable but wrong, and different from each other. ' +
     'Every answer is a short phrase of 1 to 6 words, all about the same length. JSON only.\n\n' +
     `Example notes: ${EXAMPLE_NOTE}\nExample JSON: ${EXAMPLE_JSON}`;
   const angle = ANGLES[attempt % ANGLES.length];
-  const user = `Notes: ${f.text}\n\n${angle ? angle + '\n' : ''}Write one multiple-choice question about these notes. JSON:`;
+  const user = `Notes: ${f.lead ? f.lead + ' ' : ''}${f.text}\n\n${angle ? angle + '\n' : ''}Write one multiple-choice question about these notes. JSON:`;
   return [
     { role: 'system' as const, content: system },
     { role: 'user' as const, content: user },
@@ -512,7 +518,7 @@ export async function writeQuiz(chunks: StoredChunk[], target: number, deps: Qui
   // Each fact gets up to 3 tries (a different wording angle each time), spread out: first pass over every fact,
   // then the facts that failed get their next try. Total attempts are capped so a hopeless note ends.
   const tries = new Map<Fact, number>();
-  const budget = Math.max(goal * 4, 12);
+  const budget = Math.max(goal * 5, 12);
   let made = 0;
   let attempts = 0;
   let queue = order.slice();

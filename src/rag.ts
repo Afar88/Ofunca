@@ -642,7 +642,8 @@ export function checkMcqKey<T extends { question?: string; answer: string; optio
   const scores = q.options.map((o) => optionSupport(o, excerpt, q.question ?? ''));
   const strong = scores.map((s, i) => (s >= STRONG ? i : -1)).filter((i) => i >= 0);
   const top = Math.max(...scores);
-  const tied = strong.filter((i) => top - scores[i] < 0.05);
+  // A verbatim match (1.05) is no better than another option fully stated in the notes (1.0): both are right answers.
+  const tied = strong.filter((i) => top - scores[i] <= 0.1);
   if (tied.length >= 2) return null; // two or more options equally backed by the notes: ambiguous
   const key = scores[q.correct];
   if (key >= STRONG) return scores[q.correct] === top ? q : null;

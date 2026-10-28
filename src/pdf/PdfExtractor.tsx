@@ -29,7 +29,29 @@ export const PdfExtractor = forwardRef<PdfExtractorHandle>(function PdfExtractor
       if (!web.current) throw new Error('PDF reader is not ready. Please try again.');
       const id = Math.random().toString(36).slice(2);
       return new Promise<string[]>((resolve, reject) => {
-        pending.current[id] = { resolve, reject, onProgress };
+        // A reader that stops answering must not hold up every later import: give up after 90 s without progress.
+        let timer: any = null;
+        const arm = () => {
+          clearTimeout(timer);
+          timer = setTimeout(() => {
+            if (!pending.current[id]) return;
+            delete pending.current[id];
+            reject(new Error('The PDF reader stopped responding. Try again, or try a smaller PDF.'));
+          }, 90000);
+        };
+        const done = <T,>(fn: (v: T) => void) => (v: T) => {
+          clearTimeout(timer);
+          fn(v);
+        };
+        pending.current[id] = {
+          resolve: done(resolve),
+          reject: done(reject),
+          onProgress: (p, t) => {
+            arm();
+            onProgress?.(p, t);
+          },
+        };
+        arm();
         web.current?.postMessage(JSON.stringify({ cmd: 'extract', id, data: base64 }));
       });
     },
@@ -58,6 +80,9 @@ export const PdfExtractor = forwardRef<PdfExtractorHandle>(function PdfExtractor
         }}
         onContentProcessDidTerminate={() => {
           ready.current = false;
+          const all = pending.current;
+          pending.current = {};
+          Object.values(all).forEach((p) => p.reject(new Error('The PDF reader closed unexpectedly. Please try again.')));
           setGen((g) => g + 1);
         }}
         onMessage={(ev) => {

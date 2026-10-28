@@ -1758,7 +1758,7 @@ function Main() {
                     </Pressable>
                   ))}
                 </View>
-                <Text style={[s.small, { marginTop: 8 }]}>Answers feel slow? Try GPU.</Text>
+                <Text style={[s.small, { marginTop: 8 }]}>Answers or quizzes feel slow? Try the other one: on some phones CPU is faster than GPU.</Text>
               </MenuSection>
 
               <MenuSection C={C} icon="folder-outline" title="My data" open={menuSec === 'data'} onToggle={() => toggleSec('data')}>
@@ -2094,7 +2094,7 @@ const QACard = memo(function QACard({
             <Text style={s.small}>{qa.hits.length ? 'Writing answer…' : 'Searching your notes…'}</Text>
           </View>
         )}
-        {answered && (onShorter || onReply) ? (
+        {answered ? ( // Where from? stays available while another answer is being written
           <View style={s.qaActions}>
             {onShorter && (
               <Pressable style={s.qaAction} onPress={() => onShorter(qa)} hitSlop={6}>

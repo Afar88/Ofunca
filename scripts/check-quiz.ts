@@ -55,7 +55,8 @@ const chunks = chunkText(pa).map((c, i) => ({ id: 'c' + i, docId: 'd', text: c.t
 const facts = factsOf(chunks);
 check(facts.some((f) => f.kind === 'list' && f.text.startsWith('Challenges of Public Affairs: Financial constraints; Political interference; Negative media coverage; Misinformation and fake news')), 'numbered list found with its heading');
 check(countFacts(chunks.map((c) => c.text)) === facts.length, 'count at import == facts at quiz time');
-check(capacityFromFacts(10) === 6 && capacityFromFacts(1) === 0, 'capacity is conservative');
+check(capacityFromFacts(10) === 5 && capacityFromFacts(19) === 10 && capacityFromFacts(1) === 0, 'capacity is conservative (55% of facts)');
+check(parseFactMcq('{"question":"Why does anaerobic respiration occur when oxygen is scarce?","answer":"Anaerobic respiration happens when oxygen is scarce","wrong":["It is a backup","It makes heat","It is faster"]}') === null, 'answer that only repeats the question is dropped');
 check(mergeChunks(['alpha beta gamma delta epsilon zeta eta theta', 'delta epsilon zeta eta theta iota kappa']) === 'alpha beta gamma delta epsilon zeta eta theta iota kappa', 'overlapping passages merge');
 check(listQuestion('Challenges of Public Affairs') === 'Which of these is one of the challenges of public affairs?', 'list question wording');
 const lq = parseListMcq('{"wrong":["Political interference","Staff shortages","Weak branding","Poor timing"]}', { text: 'Challenges of PA: Financial constraints; Political interference; Negative media coverage.' }, 0, 1, () => 0.5);
