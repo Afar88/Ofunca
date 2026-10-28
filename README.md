@@ -125,6 +125,16 @@ A full pass over every tap, saved file and native call, so a real phone never cl
 - **Cleaner "From your notes" snippets:** they start at a sentence or word boundary instead of mid-word.
 - **Small audit fixes:** the quiz note is cleared when a mistakes round starts or the quiz is cleared; the floating progress bar no longer hides the last quiz question. Checked and already fine: mistakes are not double-added (same question text counts once), Android back closes the drawer and every sheet, empty notes show a clear message.
 
+## Fixes (v1.0.15)
+
+From a phone test of v1.0.14 on a Redmi Note 13.
+
+- **Ask bar always fully above the keyboard, suggestion strip included.** React Native only reports the keyboard when it opens or closes, not when it grows afterwards (the word-suggestion / clipboard strip that appears above the keys), so the Ask bar ended up half under that strip. A small config plugin (`plugins/withImeInsets.js`) now listens to the keyboard's real window insets in `MainActivity` and sends its exact height to the app on **every** change; `src/keyboard.tsx` lifts the Ask bar (and Paste notes, Report a problem, the subject picker) to the keyboard's actual top edge plus a 6 dp gap, re-measured on every change. React Native's own keyboard events remain as a fallback. Check: `node --experimental-strip-types scripts/check-keyboard.ts`.
+- **"Summarise" gives clean, quick summaries.** Requests like *Summarise the main ideas*, *key points*, *overview* or *recap* now use their own short prompt: the best note's top three passages (trimmed), unnumbered so there is nothing to cite, answered in 2–4 plain sentences with a 110-token budget (it was 160, plus numbered excerpts). The answer is cleaned in code: citation fragments such as `[1. …`, `[2]`, `Excerpt 1:` and stray brackets are removed, a "couldn't find a direct answer" line tacked onto an answer that did use the notes is dropped, and the summary ends at its last full sentence. Sources still show as cards under the answer (before, the stray "couldn't find" line also hid them). The "not found" fallback line is now only shown when nothing was answered. In a sandbox test with the real Llama 3.2 1B model the summary came out as clean prose in ~5 s on CPU.
+- **Stricter quiz answer keys.** Each option is now checked against the **one place** in the passage the question is about (the sentences that share the question's words, plus their neighbours), not words scattered across the passage, and words an option merely repeats from the question (e.g. "OLX") earn nothing. Dates and numbers must match the sentence about that fact (e.g. "2019" is rejected when that sentence says 2020); a question that itself contains a date or number not in the notes is dropped. A one- or two-word answer must be in that very sentence ("It occurs in the mitochondria" no longer backs a question about lactic acid). A key the passage does not back is re-keyed only when exactly one other option is clearly stated there (a number, or 2+ of its own words); otherwise the question is dropped and the next passage is tried. Statements posing as questions and questions that give the answer away are skipped too. The key is checked against the exact passage text the model was shown.
+- **No more near-duplicate questions.** Repeats are now caught by topic, not just wording: shared topic words (with simple stemming, so *relationship/relationships*), the same pair of names (two OLX–Jiji questions), and the same correct answer all count. Names that run through the whole subject (e.g. "Public Affairs") don't count as a match. Each accepted question's source sentence is taken out of the passage for later questions, so the next question has to use a different fact. The "already asked" list is no longer put in the prompt: tested with the real model, the 1B model copied the listed question back (7 of 9 attempts asked about stomata); without it questions spread across passages. Check: `node --experimental-strip-types scripts/check-mcq-key.ts`.
+- **Trade-off:** the stricter checks throw away more of the small model's weak questions, so a quiz may need more attempts (the existing budget of 3× the questions, at least 12, still applies and the app still says "Made X of Y" when notes are short).
+
 ## Install (Android phone, arm64, Android 10+)
 
 1. Download `Ofunca-v1.0.6.apk` to the phone.
@@ -163,6 +173,7 @@ src/chunk.ts               sentence-aware overlapping chunker
 src/store.ts               on-device library (docs + passages + vectors)
 src/pdf/                   offline pdf.js WebView extractor (generated page + bridge)
 plugins/withReleaseHardening.js   unsigned release, not debuggable, no cleartext/backup
+plugins/withImeInsets.js   sends the keyboard's real height (IME insets) to JS on every change
 qvac.config.json           QVAC plugins bundled into the mobile worker
 ```
 

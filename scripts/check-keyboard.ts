@@ -14,3 +14,15 @@ for (let cycle = 0; cycle < 20; cycle++) {
 check(keyboardPad(776, 480) === 296, 'long chat: same padding');
 check(keyboardPad(400, 480) === 0, 'container already above keyboard: no padding');
 if (!ok) process.exit(1);
+
+// v1.0.15: the keyboard top comes from the native IME inset on every change (same math as src/keyboard.tsx).
+const imeTop = (h: number | null | undefined, wh: number | null | undefined) =>
+  typeof h !== 'number' || !(h > 1) || typeof wh !== 'number' || !(wh > 0) ? null : Math.max(0, wh - h);
+const GAP = 6;
+const padFor = (bottom: number, h: number) => { const t = imeTop(h, 800); return t == null ? 0 : keyboardPad(bottom, t - GAP); };
+// Keyboard opens at 300 dp, then the suggestion strip appears and it grows to 344 dp: no RN event, but a native one.
+check(padFor(776, 300) === 776 - (500 - GAP), 'keyboard 300dp: bar sits 6dp above it');
+check(776 - padFor(776, 344) <= 800 - 344 - GAP, 'suggestion strip (+44dp): bar moves up with it, fully visible');
+check(776 - padFor(776, 380) <= 800 - 380 - GAP, 'clipboard/emoji strip (+80dp): still fully visible');
+check(imeTop(0, 800) === null && padFor(740, 0) === 0, 'keyboard closed (inset 0): no padding');
+if (!ok) process.exit(1);

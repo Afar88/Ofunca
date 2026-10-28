@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Dimensions, Keyboard, Platform, View, type KeyboardEvent, type StyleProp, type ViewStyle } from 'react-native';
+import { DeviceEventEmitter, Dimensions, Keyboard, Platform, View, type KeyboardEvent, type StyleProp, type ViewStyle } from 'react-native';
 
 /** Bottom padding that lifts a container's bottom edge to the keyboard's top edge. Pure, so it can be checked in node. */
 export function keyboardPad(containerBottom: number | null, keyboardTop: number | null): number {
@@ -7,28 +7,51 @@ export function keyboardPad(containerBottom: number | null, keyboardTop: number 
   return Math.max(0, Math.round(containerBottom - keyboardTop));
 }
 
-/** Top edge of the keyboard in window coordinates, or null when it is hidden. Updated on every show / hide / resize,
- *  so it never depends on a one-time measurement. With edge-to-edge on Android the window is not resized by
- *  adjustResize, so the app has to make room itself. */
+/** Keyboard top from the native IME inset: windowHeight - imeHeight (dp), or null when the keyboard is closed. */
+export function imeTop(height: number | null | undefined, windowHeight: number | null | undefined): number | null {
+  if (typeof height !== 'number' || !(height > 1) || typeof windowHeight !== 'number' || !(windowHeight > 0)) return null;
+  return Math.max(0, windowHeight - height);
+}
+
+/** Small gap kept between the input bar and the keyboard, so nothing is ever tucked under its edge. */
+export const KEYBOARD_GAP = 6;
+
+/** Top edge of the keyboard in window coordinates, or null when it is hidden.
+ *  Source of truth on Android: the native "ofuncaImeChange" event (plugins/withImeInsets.js), which fires on EVERY
+ *  change of the IME inset — including the suggestion strip growing the keyboard after it opened, which React
+ *  Native's own keyboardDidShow never reports. RN's keyboard events are only used until a native event arrives
+ *  (older build / other platform). With edge-to-edge the window is not resized, so the app makes room itself. */
 export function useKeyboardTop(onShow?: () => void): number | null {
   const [top, setTop] = useState<number | null>(null);
   const cb = useRef(onShow);
   cb.current = onShow;
+  const nativeSeen = useRef(false);
   useEffect(() => {
     const showEv = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
     const hideEv = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const apply = (t: number | null) => {
+      setTop((prev) => (prev === t ? prev : t));
+      if (t != null) cb.current?.();
+    };
     const onKb = (e: KeyboardEvent) => {
+      if (nativeSeen.current) return; // the native inset is exact; RN's value misses the suggestion strip
       const h = e?.endCoordinates?.height ?? 0;
       let y = e?.endCoordinates?.screenY;
       if (typeof y !== 'number' || !(y > 0)) y = Dimensions.get('screen').height - h;
-      if (h <= 0) return setTop(null);
-      setTop(y);
-      cb.current?.();
+      if (h <= 0) return apply(null);
+      apply(y);
+    };
+    const onIme = (e: { height?: number; windowHeight?: number }) => {
+      nativeSeen.current = true;
+      apply(imeTop(e?.height, e?.windowHeight));
     };
     const subs = [
+      DeviceEventEmitter.addListener('ofuncaImeChange', onIme),
       Keyboard.addListener(showEv, onKb),
       Keyboard.addListener('keyboardDidChangeFrame' as any, onKb),
-      Keyboard.addListener(hideEv, () => setTop(null)),
+      Keyboard.addListener(hideEv, () => {
+        if (!nativeSeen.current) apply(null);
+      }),
     ];
     return () => subs.forEach((s) => s.remove());
   }, []);
@@ -51,11 +74,17 @@ export function KeyboardSafe({ style, children, onShow }: { style?: StyleProp<Vi
   });
   useEffect(() => {
     measure();
-    const t = setTimeout(measure, 120); // the tab bar hides / shows after the keyboard event: measure again
-    return () => clearTimeout(t);
+    // the tab bar hides / shows after the keyboard event: measure again once it has settled
+    const t1 = setTimeout(measure, 120);
+    const t2 = setTimeout(measure, 350);
+    return () => {
+      clearTimeout(t1);
+      clearTimeout(t2);
+    };
   }, [top, measure]);
+  const pad = top == null ? 0 : keyboardPad(bottom, top - KEYBOARD_GAP);
   return (
-    <View ref={ref} onLayout={measure} style={[{ flex: 1 }, style, { paddingBottom: keyboardPad(bottom, top) }]}>
+    <View ref={ref} onLayout={measure} style={[{ flex: 1 }, style, { paddingBottom: pad }]}>
       {children}
     </View>
   );

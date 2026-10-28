@@ -81,8 +81,15 @@ import {
   MCQ_SCHEMA,
   isNearDuplicate,
   checkMcqKey,
+  quizPassage,
+  supportingSentence,
+  commonEntities,
+  isSummaryRequest,
+  buildSummaryPrompt,
+  dropNotFoundTail,
+  endAtSentence,
+  isNotFound,
   tidySnippetStart,
-  quizAvoidList,
   quizExcerpts,
   search,
   type Hit, splitQuestions, bestDocHits } from './src/rag';
@@ -816,13 +823,13 @@ function Main() {
       setGenerating(true);
       let answer = '';
       try {
-        answer = cleanAnswer(
+        answer = dropNotFoundTail(cleanAnswer(
           await generate(
             buildFollowUpPrompt(prev.question, prev.answer, text, prev.hits),
             (txt) => setQas((p) => p.map((x) => (x.id === id ? { ...x, answer: cleanAnswer(txt) } : x))),
             { maxTokens: 150 },
           ),
-        );
+        ));
       } finally {
         setGenerating(false);
       }
@@ -871,32 +878,38 @@ function Main() {
       };
       for (const part of parts) {
         const qv = await embedQuery(part);
+        // "Summarise the main ideas" matches no single passage strongly, so it gets the best note's top passages
+        // and its own short prompt: plain prose, no numbered excerpts to leak as "[1. …", no "couldn't find" line.
+        const summary = isSummaryRequest(part);
         let hits = search(qv, part, chunksIn(scopeValid), docNames, 8);
         const subject = scopeValid === AUTO ? subjectByDoc[hits[0]?.chunk.docId] : scopeValid;
-        hits = bestDocHits(hits.filter((h) => subjectByDoc[h.chunk.docId] === subject), 3);
+        hits = hits.filter((h) => subjectByDoc[h.chunk.docId] === subject);
+        hits = summary ? hits.filter((h) => h.chunk.docId === hits[0]?.chunk.docId).slice(0, 3) : bestDocHits(hits, 3);
         const best = hits[0]?.score ?? 0;
         let answer: string;
-        if (best < 0.22) { // off-topic questions score ~0.18 with EmbeddingGemma; on-topic ≥0.3
+        if (!hits.length || (!summary && best < 0.22)) { // off-topic questions score ~0.18 with EmbeddingGemma; on-topic ≥0.3
           answer = NOT_FOUND;
         } else {
           setBusy(null);
           setGenerating(true);
+          const tidy = (txt: string) => (summary ? cleanAnswer(dropNotFoundTail(txt)) : dropNotFoundTail(cleanAnswer(txt)));
           try {
-            answer = cleanAnswer(
+            answer = tidy(
               await generate(
-                buildAnswerPrompt(part, hits),
-                (txt) => setQas((prev) => prev.map((x) => (x.id === id ? { ...x, answer: show(cleanAnswer(txt)) } : x))),
-                { maxTokens: multi ? 110 : 160 },
+                summary ? buildSummaryPrompt(part, hits) : buildAnswerPrompt(part, hits),
+                (txt) => setQas((prev) => prev.map((x) => (x.id === id ? { ...x, answer: show(tidy(txt)) } : x))),
+                { maxTokens: summary ? (multi ? 90 : 110) : multi ? 110 : 160 },
               ),
             );
           } finally {
             setGenerating(false);
           }
+          if (summary) answer = isNotFound(answer) ? '' : endAtSentence(answer);
           if (answer.replace(/[^a-z0-9]/gi, '').length < 3) {
             answer = `From your notes: “${tidySnippetStart(hits[0]?.chunk.text ?? '').slice(0, 300)}”`;
           }
         }
-        if (!answer.toLowerCase().includes("couldn't find that in your notes")) {
+        if (!isNotFound(answer)) {
           allHits.push(...hits);
           if (subject && !subs.includes(subject)) subs.push(subject);
         }
@@ -1064,7 +1077,11 @@ function Main() {
       }
       if (!excerpts.length) throw new Error('Your notes don’t have enough text for a quiz yet. Add a bit more and try again.');
       const target = quizSize === QUIZ_ALL ? excerpts.length : quizSize;
-      const asked: { q: string; src: string }[] = [];
+      const asked: { q: string; a: string; src: string }[] = [];
+      // Facts (sentences) already used by a question are taken out of the passage for later questions, and
+      // names that run through the whole subject don't count when comparing topics.
+      const usedFacts = new Map<string, string[]>();
+      const common = commonEntities(pool.map((c) => c.text));
       let made = 0;
       // A rejected question (duplicate, broken or a wrong answer key) moves on to the next passage. When the
       // passages run out (short notes), they are visited again with a different focus and a different slice of
@@ -1077,8 +1094,13 @@ function Main() {
         visits.set(ex.id, round + 1);
         setBusy(`Writing question ${made + 1} of ${target}…`);
         let raw = '';
+        let passage = '';
         try {
-          raw = await generate(buildMcqPrompt(ex.text, quizAvoidList(asked, ex.id), round), () => {}, {
+          passage = quizPassage(ex.text, round, usedFacts.get(ex.id) ?? []);
+          // No "already asked" list in the prompt: tested with the real 1B model, it copies the listed question
+          // back (7 of 9 "stomata" questions). Variety comes from used facts being taken out of the passage, the
+          // revisit angle, and the duplicate check below.
+          raw = await generate(buildMcqPrompt(passage, [], round), () => {}, {
             maxTokens: 100, // question + 4 short options fit in ~70 tokens; the JSON grammar stops it when done
             firstTokenMs: 60000,
             temp: round ? 0.8 : 0.6, // revisits: a little more variety
@@ -1091,10 +1113,13 @@ function Main() {
         if (stopQuiz.current) break; // Stop tapped: keep the questions already written
         const parsed = parseMcq(raw);
         // Answer key checked against the passage: wrong keys are fixed when clear, otherwise the question is skipped.
-        const q = parsed ? checkMcqKey(parsed, ex.text) : null;
-        // Same question (even reworded slightly) as one already in this quiz: skip it, try another passage.
-        if (!q || isNearDuplicate(q.question, asked.map((a) => a.q))) continue;
-        asked.push({ q: q.question, src: ex.id });
+        // Checked against the exact text the question was written from (dates and numbers included).
+        const q = parsed ? checkMcqKey(parsed, passage || ex.text) : null;
+        // Same question, same fact or same topic (names/entities) as one already in this quiz: skip it.
+        if (!q || isNearDuplicate(q.question, asked, q.answer, common)) continue;
+        asked.push({ q: q.question, a: q.answer, src: ex.id });
+        const fact = supportingSentence(q.answer, passage || ex.text, q.question);
+        if (fact) usedFacts.set(ex.id, [...(usedFacts.get(ex.id) ?? []), fact]);
         made++;
         setQuiz((prev) => [
           ...prev,
