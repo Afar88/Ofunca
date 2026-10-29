@@ -281,7 +281,7 @@ Record with the phone's built-in screen recorder (it records offline). Aim for 2
 
 - **Built during the event:** all of Ofunca's code. The repo starts from scratch with the first commit on 26 Oct 2026 and runs through v1.0.17 on 29 Oct 2026, after six rounds of testing on a real phone. Nothing was carried over from an earlier project.
 - **Reused third-party work (credited):** Tether QVAC SDK `@qvac/sdk` 0.22 (Apache-2.0) and its models: Llama 3.2 1B Instruct Q4_0 (Llama 3.2 Community License), EmbeddingGemma 300M Q4_0 (Gemma Terms of Use), and QVAC OCR (CRAFT detector + Latin recogniser). Also Expo SDK 54 / React Native, pdf.js (Apache-2.0), and GitHub Actions for builds. Model files are downloaded from the QVAC registry or commit-pinned Hugging Face copies with the same SHA-256.
-- **Device used:** Redmi Note 13, 8 GB RAM. Needs Android 10+ on arm64, about 1.05 GB free for the models plus the ~198 MB APK. A phone with 6 GB RAM or more is recommended for the 1B model.
+- **Device used:** Redmi Note 13, 8 GB RAM. Needs Android 10+ on arm64, about 1.05 GB free for the models plus the ~198 MB APK.
 - **Needs a network for:** the one-time model download, the optional update check, and WhatsApp/email problem reports. Everything else works offline.
 
 ## License
