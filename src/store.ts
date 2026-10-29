@@ -10,7 +10,8 @@ export type NoteDoc = {
   chunkCount: number;
   charCount: number;
   subject?: string; // e.g. "Biology". Questions can be limited to one subject so notes never mix.
-  factCount?: number; // distinct quiz-able facts, counted once when the note is added (v1.0.16)
+  factCount?: number; // expected quiz questions, counted once when the note is added (v1.0.16; outline-based since v1.0.17)
+  capVer?: number; // how factCount was counted (2 = v1.0.17)
 };
 
 export const GENERAL = 'General';
@@ -97,12 +98,13 @@ function save(): Promise<void> {
 }
 
 /** Saves fact counts for notes added before v1.0.16 (worked out once, then kept). */
-export async function setDocFactCounts(counts: Record<string, number>) {
+export async function setDocFactCounts(counts: Record<string, number>, capVer?: number) {
   const db = await loadDB();
   let changed = false;
   for (const d of db.docs) {
-    if (typeof counts[d.id] === 'number' && d.factCount !== counts[d.id]) {
+    if (typeof counts[d.id] === 'number' && (d.factCount !== counts[d.id] || d.capVer !== capVer)) {
       d.factCount = counts[d.id];
+      d.capVer = capVer;
       changed = true;
     }
   }

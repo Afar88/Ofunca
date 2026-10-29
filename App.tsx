@@ -60,7 +60,7 @@ import { friendlyError, type DlState, type ModelKey } from './src/modelDownload'
 import { ocrCached, recognise, releaseOcr, type OcrResult } from './src/ocr';
 import { installBundledOcr, unloadLlm, reloadLlm, withModelExclusive } from './src/qvac';
 import { Preempted } from './src/llmLock';
-import { writeQuiz, countFacts, capacityFromFacts, stripOptionMarker, Preempted as QuizPreempted } from './src/quizGen';
+import { writeQuiz, countFacts, capacityFromFacts, stripOptionMarker, mergeChunks, CAPACITY_VERSION, Preempted as QuizPreempted } from './src/quizGen';
 import { checkForUpdate } from './src/update';
 import { Ionicons } from '@expo/vector-icons';
 import { Camera } from 'expo-camera';
@@ -68,6 +68,7 @@ import SnapCamera, { type SnapResult } from './src/SnapCamera';
 import { Intro } from './src/Intro';
 import { noteError, lastErrorLine, onStrayError } from './src/lastError';
 import { Confetti } from './src/Confetti';
+import { FillLayer, slice, type Fill } from './src/FillProgress';
 import {
   NOT_FOUND,
   cleanAnswer,
@@ -94,7 +95,7 @@ import {
   tidySnippetStart,
   quizExcerpts,
   search,
-  type Hit, splitQuestions, bestDocHits } from './src/rag';
+  type Hit, splitQuestions, bestDocHits, listAnswer } from './src/rag';
 import { SAMPLE_NOTES, SAMPLE_TITLE } from './src/sample';
 
 // Every button answers the finger at once: a soft dim while pressed (plus the Android ripple), so taps
@@ -386,6 +387,11 @@ function Main() {
   const [docs, setDocs] = useState<NoteDoc[]>([]);
   const [chunks, setChunks] = useState<StoredChunk[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
+  // v1.0.17: progress shown as a fill inside the button of the job that is running (see src/FillProgress.tsx)
+  type JobKind = 'import' | 'snap' | 'paste' | 'sample';
+  const [fill, setFill] = useState<Fill | null>(null);
+  const [jobKind, setJobKind] = useState<JobKind | null>(null);
+  const [savingIdx, setSavingIdx] = useState<false | 'queued' | 'running'>(false); // Save & index is filling (the review box stays open)
   const [justDownloaded, setJustDownloaded] = useState(false);
   const pdf = useRef<PdfExtractorHandle>(null);
 
@@ -572,17 +578,21 @@ function Main() {
   }
 
   // ---------- Indexing ----------
-  async function indexDoc(name: string, kind: NoteDoc['kind'], raw: RawChunk[], subject: string) {
+  async function indexDoc(name: string, kind: NoteDoc['kind'], raw: RawChunk[], subject: string, range: [number, number] = [0.05, 0.97]) {
     if (!raw.length) throw new Error('No readable text found.');
     const say = throttled((t) => setBusy(t));
+    setFill({ p: range[0], label: 'Indexing… 0%' });
     const vecs = await embedDocuments(
       raw.map((c) => c.text),
-      (d, t) => say(`Learning your notes… ${Math.round((d / t) * 100)}%`, d === t),
+      (d, t) => {
+        say(`Learning your notes… ${Math.round((d / t) * 100)}%`, d === t);
+        setFill({ p: slice(range[0], range[1], d / t), label: `Indexing… ${Math.round((d / t) * 100)}%` });
+      },
     );
     const docId = makeId('d');
     const stored: StoredChunk[] = raw.map((c, i) => ({ id: makeId('c'), docId, page: c.page, text: c.text, vec: roundVec(vecs[i]) }));
     await addDoc(
-      { id: docId, name, kind, subject: subject.trim() || GENERAL, addedAt: Date.now(), chunkCount: stored.length, charCount: raw.reduce((s, c) => s + c.text.length, 0), factCount: countFacts(raw.map((c) => c.text)) },
+      { id: docId, name, kind, subject: subject.trim() || GENERAL, addedAt: Date.now(), chunkCount: stored.length, charCount: raw.reduce((s, c) => s + c.text.length, 0), factCount: countFacts(raw.map((c) => c.text)), capVer: CAPACITY_VERSION },
       stored,
     );
     await refreshLibrary();
@@ -593,14 +603,14 @@ function Main() {
   const jobChain = useRef<Promise<void>>(Promise.resolve());
   const [queued, setQueued] = useState(0);
   const running = useRef(0);
-  function guarded(label: string, fn: () => Promise<void>, needs: 'embed' | 'llm' = 'embed', onFail?: () => void): Promise<void> {
+  function guarded(label: string, fn: () => Promise<void>, needs: 'embed' | 'llm' = 'embed', onFail?: () => void, kind: JobKind = 'import'): Promise<void> {
     const waiting = running.current > 0;
     if (waiting) setQueued((q) => q + 1);
     running.current++;
     const go = async () => {
       if (waiting) setQueued((q) => Math.max(0, q - 1));
       try {
-        await runJob(label, fn, needs, onFail);
+        await runJob(label, fn, needs, onFail, kind);
       } finally {
         running.current--;
       }
@@ -609,9 +619,11 @@ function Main() {
     jobChain.current = p.catch(() => {});
     return p;
   }
-  async function runJob(label: string, fn: () => Promise<void>, needs: 'embed' | 'llm', onFail?: () => void) {
+  async function runJob(label: string, fn: () => Promise<void>, needs: 'embed' | 'llm', onFail?: () => void, kind: JobKind = 'import') {
     const ready = () => (needs === 'llm' ? isReady() : isEmbedReady());
     setBusy(label);
+    setJobKind(kind);
+    setFill({ p: null, label });
     try {
       if (!ready()) {
         setBusy('Getting the AI ready… (only takes a moment)');
@@ -626,6 +638,8 @@ function Main() {
       Alert.alert('Something went wrong', e?.message ?? String(e));
     } finally {
       setBusy(null);
+      setFill(null);
+      setJobKind(null);
     }
   }
 
@@ -669,15 +683,19 @@ function Main() {
         const b64 = await FS.readAsStringAsync(f.uri, { encoding: FS.EncodingType.Base64 });
         const say = throttled((t) => setBusy(t));
         if (!pdf.current) throw new Error('The PDF reader is not ready yet. Please try again in a moment.');
-        const pages = await pdf.current.extract(b64, (p, t) => say(`Reading PDF… page ${p}/${t}`, p === t));
+        setFill({ p: 0.02, label: 'Opening PDF…' });
+        const pages = await pdf.current.extract(b64, (p, t) => {
+          say(`Reading PDF… page ${p}/${t}`, p === t);
+          setFill({ p: slice(0.02, 0.5, p / t), label: `Reading page ${p}/${t}…` });
+        });
         raw = chunkPages(pages);
         if (!raw.length) throw new Error('This PDF has no selectable text (it may be scanned). Try "Snap notes" on a photo of the page instead.');
       } else {
         raw = chunkText(await FS.readAsStringAsync(f.uri));
       }
-      await indexDoc(f.name.replace(/\.(pdf|txt|md)$/i, ''), isPdf ? 'pdf' : 'text', raw, subject);
+      await indexDoc(f.name.replace(/\.(pdf|txt|md)$/i, ''), isPdf ? 'pdf' : 'text', raw, subject, isPdf ? [0.5, 0.97] : [0.1, 0.97]);
       FS.deleteAsync(f.uri, { idempotent: true }).catch(() => {});
-    });
+    }, 'embed', undefined, 'import');
   }
 
   // ---------- Paste & Snap modals ----------
@@ -734,7 +752,7 @@ function Main() {
         await installBundledOcr(setBusy);
         ok = true;
         setOcrMissing(false);
-      });
+      }, 'embed', undefined, 'snap');
       if (!ok) return;
     }
     // Ofunca's own in-app camera: no separate camera app, so Android has no reason to close Ofunca.
@@ -765,13 +783,23 @@ function Main() {
       // Make room: the tutor model steps aside while the photo reader works, then comes back. It waits for an
       // answer that is being written, and pauses a quiz (which carries on by itself afterwards).
       setBusy('Waiting for the tutor to finish…');
+      setFill({ p: 0.04, label: 'Waiting for the tutor…' });
       const r = await withModelExclusive(async () => {
         try {
           setBusy('Making room for the photo reader…');
+          setFill({ p: 0.12, label: 'Making room…' });
           await unloadLlm();
-          const out = await recognise(photo, setBusy);
+          setFill({ p: 0.2, label: 'Reading photo…' });
+          const out = await recognise(photo, (t) => {
+            setBusy(t);
+            // real steps where the reader reports them; the reading itself gives no percentage: smooth estimate
+            if (/^Preparing/.test(t)) setFill({ p: 0.25, label: 'Preparing photo…' });
+            else if (/^Loading/.test(t)) setFill({ p: 0.35, label: 'Loading reader…' });
+            else setFill({ p: null, label: 'Reading text…' });
+          });
           await releaseOcr();
           setBusy('Getting the tutor ready again…');
+          setFill({ p: 0.9, label: 'Almost done…' });
           await reloadLlm(device);
           return out;
         } finally {
@@ -780,8 +808,9 @@ function Main() {
         }
       });
       if (!r.text.trim()) throw new Error('No text was found in this photo. Try a sharper, well-lit photo taken straight on.');
+      setFill({ p: 1, label: 'Done' });
       openEditor({ mode: 'ocr', title: 'Snapped notes ' + new Date().toLocaleDateString(), text: r.text, subject: '', ocr: r });
-    });
+    }, 'embed', undefined, 'snap');
   }
 
   const savingEditor = useRef(false);
@@ -794,17 +823,27 @@ function Main() {
       return;
     }
     savingEditor.current = true; // a double tap must not save the same notes twice
-    setEditor(null);
-    setTimeout(() => (savingEditor.current = false), 600);
-    await guarded('Indexing…', async () => {
-      await indexDoc(title.trim() || 'Pasted notes', mode === 'ocr' ? 'text' : 'pasted', chunkText(text), subject);
-    });
+    // v1.0.17: the review box stays open while Save & index fills up, and closes when the notes are in. If indexing
+    // fails the text is still there to try again (before, it was lost with the closed box).
+    setSavingIdx('queued');
+    let ok = false;
+    try {
+      await guarded('Indexing…', async () => {
+        setSavingIdx('running');
+        await indexDoc(title.trim() || 'Pasted notes', mode === 'ocr' ? 'text' : 'pasted', chunkText(text), subject, [0.05, 0.97]);
+        ok = true;
+      }, 'embed', undefined, mode === 'ocr' ? 'snap' : 'paste');
+    } finally {
+      setSavingIdx(false);
+      savingEditor.current = false;
+    }
+    if (ok) setEditor(null);
   }
 
   async function addSample() {
     await guarded('Adding sample notes…', async () => {
       await indexDoc(SAMPLE_TITLE, 'text', chunkText(SAMPLE_NOTES), 'Biology');
-    });
+    }, 'embed', undefined, 'sample');
   }
 
   // ---------- Ask ----------
@@ -934,7 +973,25 @@ function Main() {
         hits = summary ? hits.filter((h) => h.chunk.docId === hits[0]?.chunk.docId).slice(0, 3) : bestDocHits(hits, 3);
         const best = hits[0]?.score ?? 0;
         let answer: string;
-        if (!hits.length || (!summary && best < 0.22)) { // off-topic questions score ~0.18 with EmbeddingGemma; on-topic ≥0.3
+        // v1.0.17: a question about a list in the notes ("Importance of public affairs") is answered from the whole
+        // list with its sub-labels, straight away and without the model (no "To Government 1. …" fragments).
+        let listed: { answer: string; hits: Hit[] } | null = null;
+        if (!summary && hits.length && best >= 0.22) {
+          const docOrder = [...new Set([hits[0].chunk.docId, ...pool.filter((c) => !subject || subjOf[c.docId] === subject).map((c) => c.docId)])];
+          for (const did of docOrder.slice(0, 6)) {
+            const own = pool.filter((c) => c.docId === did);
+            const la = listAnswer(part, mergeChunks(own.map((c) => c.text)));
+            if (!la) continue;
+            const itemNames = la.lists.flatMap((l) => l.items.map((x) => x.name.slice(0, 30)));
+            const srcs = own.filter((c) => itemNames.some((n) => c.text.includes(n))).slice(0, 3);
+            listed = { answer: la.answer, hits: (srcs.length ? srcs : own.slice(0, 1)).map((c) => ({ chunk: c, score: 1, docName: names[c.docId] ?? 'Notes' })) };
+            break;
+          }
+        }
+        if (listed) {
+          answer = listed.answer;
+          hits = listed.hits;
+        } else if (!hits.length || (!summary && best < 0.22)) { // off-topic questions score ~0.18 with EmbeddingGemma; on-topic ≥0.3
           answer = NOT_FOUND;
         } else {
           setAskStatus(quizRunningRef.current ? 'Quiz paused · answering your question…' : 'Thinking…');
@@ -948,7 +1005,7 @@ function Main() {
                   setGenerating(true);
                   setQas((prev) => prev.map((x) => (x.id === id ? { ...x, answer: show(tidy(txt)) } : x)));
                 },
-                { maxTokens: summary ? (multi ? 90 : 110) : multi ? 110 : 160, kind: 'ask', onWaiting: askWaiting },
+                { maxTokens: summary ? (multi ? 90 : 110) : multi ? 110 : 140, kind: 'ask', onWaiting: askWaiting },
               ),
             );
           } finally {
@@ -999,11 +1056,14 @@ function Main() {
     try {
       Vibration.vibrate(oi === q.correct ? 12 : [0, 35, 70, 35]); // tiny tick for right, double buzz for wrong
     } catch {} // a buzz is a nice-to-have; it must never take the quiz down
-    const key = String(q.question ?? '').toLowerCase();
+    // question + answer: two list questions can share a stem ("…one of the challenges of Public Affairs?") but
+    // have different answers; they are different mistakes (v1.0.17)
+    const keyOf = (m: { question?: string; answer?: string }) => `${String(m.question ?? '').toLowerCase()}|${String(m.answer ?? '').toLowerCase()}`;
+    const key = keyOf(q);
     if (oi !== q.correct) {
-      setMistakes((prev) => (prev.some((m) => String(m.question ?? '').toLowerCase() === key) ? prev : [...prev, { ...q, picked: undefined, revealed: false }]));
+      setMistakes((prev) => (prev.some((m) => keyOf(m) === key) ? prev : [...prev, { ...q, picked: undefined, revealed: false }]));
     } else if (reviewing) {
-      setMistakes((prev) => prev.filter((m) => String(m.question ?? '').toLowerCase() !== key)); // got it right now: mastered
+      setMistakes((prev) => prev.filter((m) => keyOf(m) !== key)); // got it right now: mastered
     }
   }
   function startReview() {
@@ -1092,19 +1152,19 @@ function Main() {
   // How many different questions the chosen notes can carry (facts counted once per note, at import; see quizGen.ts).
   const factCache = useRef<Record<string, number>>({});
   const factCountOf = (d: NoteDoc) => {
-    if (typeof d.factCount === 'number') return d.factCount;
+    if (typeof d.factCount === 'number' && d.capVer === CAPACITY_VERSION) return d.factCount;
     if (factCache.current[d.id] == null) factCache.current[d.id] = countFacts(chunks.filter((c) => c.docId === d.id).map((c) => c.text));
     return factCache.current[d.id];
   };
   const quizDocs = scopeValid === AUTO ? docs : docs.filter((d) => subjectOf(d) === scopeValid);
   const quizCapacity = capacityFromFacts(quizDocs.reduce((n, d) => n + factCountOf(d), 0));
-  // Notes added before v1.0.16 get their count worked out once and saved.
+  // Notes added before v1.0.17 get their count worked out again (new outline-based count) and saved once.
   useEffect(() => {
-    const missing = docs.filter((d) => typeof d.factCount !== 'number');
+    const missing = docs.filter((d) => typeof d.factCount !== 'number' || d.capVer !== CAPACITY_VERSION);
     if (!missing.length || !chunks.length) return;
     const counts: Record<string, number> = {};
     for (const d of missing) counts[d.id] = factCountOf(d);
-    setDocFactCounts(counts).catch((e) => noteError(e, 'facts'));
+    setDocFactCounts(counts, CAPACITY_VERSION).then(() => refreshLibrary()).catch((e) => noteError(e, 'facts'));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [docs, chunks]);
   const quizSizes = [...QUIZ_SIZES.filter((n) => n !== QUIZ_ALL && n < quizCapacity), QUIZ_ALL];
@@ -1342,9 +1402,9 @@ function Main() {
         {tab === 'notes' && (
           <ScrollView contentContainerStyle={s.pad}>
             <View style={s.actions}>
-              <ActionBtn icon="document-text-outline" label="PDF / file" active={busy ? lastAction === 'import' : false} onPress={() => act('import', importFile)} />
-              <ActionBtn icon="camera-outline" label="Snap photo" active={busy ? lastAction === 'snap' : false} onPress={() => act('snap', snapNotes)} />
-              <ActionBtn icon="clipboard-outline" label="Paste text" onPress={() => act('paste', async () => openEditor({ mode: 'paste', title: '', text: '', subject: '' }))} />
+              <ActionBtn icon="document-text-outline" label="PDF / file" fill={busy && jobKind === 'import' ? fill : null} onPress={() => act('import', importFile)} />
+              <ActionBtn icon="camera-outline" label="Snap photo" fill={busy && jobKind === 'snap' ? fill : null} onPress={() => act('snap', snapNotes)} />
+              <ActionBtn icon="clipboard-outline" label="Paste text" fill={busy && jobKind === 'paste' ? fill : null} onPress={() => act('paste', async () => openEditor({ mode: 'paste', title: '', text: '', subject: '' }))} />
             </View>
             {!hideGuide && (
               <View style={s.card}>
@@ -1416,12 +1476,6 @@ function Main() {
                   <Text style={s.body}>
                     Pick a subject above, or leave it on Auto and the tutor finds the right subject for each question. Answers never mix subjects. Tap Shorter or Reply under any answer to follow up.
                   </Text>
-                  {chunks.length > 0 &&
-                    ['Summarise the main ideas', 'What are the key definitions?'].map((ex) => (
-                      <Pressable key={ex} onPress={() => setQuestion(ex)} style={s.suggest}>
-                        <Text style={s.suggestText}>{ex}</Text>
-                      </Pressable>
-                    ))}
                 </View>
               }
               keyboardShouldPersistTaps="handled"
@@ -1602,7 +1656,9 @@ function Main() {
       {party && <Confetti onDone={() => setParty(false)} />}
       {busy && !(tab === 'ask' && keyboardOpen) && (
         <View style={[s.busy, tab === 'ask' && { bottom: 140 }]} pointerEvents="none">
-          <ActivityIndicator color="#fff" />
+          <View style={s.miniTrack}>
+            <FillLayer fill={fill ?? { p: null, label: busy }} color="#FF9BCB" />
+          </View>
           <Text style={s.busyText}>{busy}{queued > 0 ? `  ·  ${queued} more lined up` : ''}</Text>
         </View>
       )}
@@ -1665,8 +1721,9 @@ function Main() {
                 multiline
                 textAlignVertical="top"
               />
-              <Pressable style={s.btn} onPress={saveEditor}>
-                <Text style={s.btnText}>Save & index on-device</Text>
+              <Pressable style={[s.btn, s.fillBtn]} onPress={saveEditor} disabled={!!savingIdx} accessibilityState={{ disabled: !!savingIdx, busy: !!savingIdx }}>
+                <FillLayer fill={savingIdx === 'running' ? fill ?? { p: null, label: 'Indexing…' } : savingIdx ? { p: 0.02, label: 'Lined up…' } : null} color="#FF9BCB" glow="rgba(255,255,255,0.75)" />
+                <Text style={s.btnText}>{savingIdx === 'running' ? fill?.label ?? 'Indexing…' : savingIdx ? 'Lined up… (another note is being added)' : 'Save & index on-device'}</Text>
               </Pressable>
             </ScrollView>
           </KeyboardSafe>
@@ -2036,11 +2093,15 @@ function hasProgress(dl: Partial<Record<ModelKey, DlState>>) {
   return Object.values(dl).some((st) => st && (st.status === 'done' || st.downloaded > 0 || st.status === 'paused'));
 }
 
-function ActionBtn({ icon, label, onPress, active }: { icon: string; label: string; onPress: () => void; active?: boolean }) {
+function ActionBtn({ icon, label, onPress, fill }: { icon: string; label: string; onPress: () => void; fill?: Fill | null }) {
+  const active = !!fill;
   return (
-    <Pressable style={[s.action, active && { borderColor: C.accent }]} onPress={onPress}>
-      <View style={s.actionBadge}>{active ? <ActivityIndicator color={C.accent} size="small" /> : <Ionicons name={icon as any} size={19} color={C.primary} />}</View>
-      <Text style={s.actionLabel}>{label}</Text>
+    <Pressable style={[s.action, s.fillBtn, active && { borderColor: C.pink }]} onPress={onPress} disabled={active} accessibilityState={{ disabled: active, busy: active }}>
+      <FillLayer fill={fill ?? null} color="rgba(255,79,163,0.30)" glow="rgba(255,190,225,0.9)" />
+      <View style={s.actionBadge}>
+        <Ionicons name={icon as any} size={19} color={active ? C.pink : C.primary} />
+      </View>
+      <Text style={s.actionLabel} numberOfLines={1}>{active ? fill!.label : label}</Text>
     </Pressable>
   );
 }
@@ -2178,6 +2239,7 @@ const makeStyles = () => StyleSheet.create({
   btn: { backgroundColor: C.pink, borderRadius: 22, paddingVertical: 15, alignItems: 'center', marginTop: 16, borderBottomWidth: 5, borderBottomColor: C.pinkDeep },
   btnText: { color: '#fff', fontWeight: '900', fontSize: 17, letterSpacing: 0.3 },
   btnDisabled: { opacity: 0.45 },
+  fillBtn: { overflow: 'hidden', position: 'relative' },
   sizeChip: { minWidth: 40, paddingVertical: 6, paddingHorizontal: 10, borderRadius: 16, borderWidth: 2, borderColor: C.primary, alignItems: 'center', backgroundColor: C.card },
   sizeChipOn: { backgroundColor: C.primary },
   sizeChipText: { color: C.primary, fontWeight: '800' },
@@ -2248,6 +2310,7 @@ const makeStyles = () => StyleSheet.create({
   qNum: { fontSize: 12, fontWeight: '900', color: C.pink, textTransform: 'uppercase', letterSpacing: 0.5 },
   qText: { fontSize: 18, fontWeight: '800', color: C.text, marginTop: 6, lineHeight: 24 },
   answerLabel: { fontSize: 12, fontWeight: '700', color: C.muted, marginTop: 14, marginBottom: 4, textTransform: 'uppercase' },
+  miniTrack: { width: 40, height: 12, borderRadius: 6, overflow: 'hidden', backgroundColor: 'rgba(255,255,255,0.18)' },
   busy: { position: 'absolute', left: 16, right: 16, bottom: 78, backgroundColor: 'rgba(59,15,120,0.95)', borderRadius: 20, padding: 12, flexDirection: 'row', alignItems: 'center', gap: 10 },
   busyText: { color: '#fff', fontSize: 14, flex: 1 },
   askStatus: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 14, paddingVertical: 6, backgroundColor: C.card, borderTopWidth: 1, borderTopColor: C.border },

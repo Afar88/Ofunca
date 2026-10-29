@@ -14,6 +14,7 @@
 import type { StoredChunk } from './store';
 import { checkMcqKey, commonEntities, isNearDuplicate, sentencesOf, tidyQuestion } from './rag';
 import { Preempted } from './llmLock';
+import { outlineOf, restoreLines, listTitle, lowerFirst, type OutlineList } from './outline';
 export { Preempted };
 
 // ---------------------------------------------------------------- facts ----------------------------------------
@@ -28,7 +29,24 @@ const factKey = (t: string) => contentWords(t).slice(0, 14).join(' ');
 const MARKER = /(?:^|\s)\(?(\d{1,2}|[a-hA-H]|i{1,3}|iv|v|vi{1,3}|ix|x|[•▪●◦*]|-(?=\s))[.)]?\s+/g;
 const ROMAN = ['i', 'ii', 'iii', 'iv', 'v', 'vi', 'vii', 'viii', 'ix', 'x'];
 
-export type Fact = { text: string; context: string; chunkId: string; kind: 'sentence' | 'list'; lead?: string };
+export type Fact = {
+  text: string;
+  context: string;
+  chunkId: string;
+  kind: 'sentence' | 'member' | 'define';
+  lead?: string;
+  heading?: string;
+  list?: OutlineList;
+  item?: number;
+  docKey?: string;
+  notes?: string[];
+  /** member question asked the other way round: "which of these is NOT one of …" */
+  neg?: boolean;
+  /** every list of the same note (wrong options for list questions come from these or the model) */
+  lists?: OutlineList[];
+  /** names and acronyms of the note, kept capitalised in questions */
+  keep?: Set<string>;
+};
 
 type Mark = { at: number; end: number; label: string };
 /** True when `b` continues the numbering of `a` (1→2, a→b, ii→iii, •→•). */
@@ -79,11 +97,12 @@ function splitHeading(t: string): { prose: string; heading: string } {
 const LABEL = /^(?:answer|ans|note|nb|n\.b|solution|explanation)\s*[:.\-–]\s*/i;
 const isFactSentence = (s: string) => contentWords(s).length >= 5 && s.length >= 30 && /[a-z]/.test(s);
 
-/** Joins a note's overlapping passages back into its full text (each passage starts with the end of the last). */
+/** Joins a note's overlapping passages back into its full text (each passage starts with the end of the last).
+ *  Line breaks are kept (v1.0.17), so lists keep their headings and sub-labels. */
 export function mergeChunks(texts: string[]): string {
   let acc = '';
   for (const raw of texts) {
-    const t = String(raw ?? '').replace(/\s+/g, ' ').trim();
+    const t = String(raw ?? '').replace(/[ \t]+/g, ' ').replace(/ ?\n ?/g, '\n').trim();
     if (!t) continue;
     if (!acc) {
       acc = t;
@@ -99,81 +118,90 @@ export function mergeChunks(texts: string[]): string {
         break;
       }
     }
-    if (!joined) acc += ' ' + t;
+    if (!joined) acc += '\n' + t;
   }
   return acc;
 }
 
-type RawFact = { text: string; context: string; kind: 'sentence' | 'list'; lead?: string };
+type RawFact = Omit<Fact, 'chunkId'>;
 
-/** Distinct facts of one note's full text: full sentences that state something, and short lists. */
+/** Distinct quiz facts of one note's full text, read as an outline (v1.0.17):
+ *  - 'member': "Which of these is one of the challenges of Public Affairs?" (one listed item is the key; a list
+ *    under a sub-label keeps it: "…an importance of Public Affairs to government?"). Sub-labels are never facts.
+ *  - 'define': "Which of the objectives … is explained as “…”?" (the item's own explanation; the other items of the
+ *    same list are the wrong options, so the key is right by construction and no model is needed).
+ *  - 'sentence': a full sentence of prose, which the model turns into a question (then checked hard). */
 export function factsOfText(full: string): RawFact[] {
-  const text = String(full ?? '').replace(/\s+/g, ' ').trim();
+  const text = String(full ?? '').trim();
   if (!text) return [];
+  const ol = outlineOf(text);
   const out: RawFact[] = [];
-  const prose: string[] = [];
-  const runs = listRuns(text);
-  let pos = 0;
-  for (let r = 0; r < runs.length; r++) {
-    const run = runs[r];
-    const { prose: before, heading } = splitHeading(text.slice(pos, run[0].at));
-    if (before) prose.push(before);
-    const items = run.map((m, i) => text.slice(m.end, i + 1 < run.length ? run[i + 1].at : runs[r + 1]?.[0].at ?? text.length).trim());
-    // The last item runs on until the next list or the end: keep its first sentence, the rest is prose again.
-    const shortList = items.slice(0, -1).filter((x) => contentWords(x).length <= 5).length >= Math.max(1, (items.length - 1) / 2);
-    let last = items[items.length - 1] ?? '';
-    let tail = '';
-    const firstSent = sentencesOf(last)[0] ?? last;
-    if (shortList) {
-      // "Misinformation and fake news A broader communication function." -> the item ends where a new capitalised phrase starts
-      const m = last.match(/^(\S+(?:\s+[a-z0-9][^\s]*)+?)\s+(?=[A-Z]\w*\b)/);
-      const cut = m && contentWords(m[1]).length <= 6 ? m[1] : firstSent;
-      tail = last.slice(cut.length).trim();
-      last = cut;
-    } else {
-      tail = last.slice(firstSent.length).trim();
-      last = firstSent;
-    }
-    items[items.length - 1] = last;
-    pos = run[run.length - 1].end + (text.slice(run[run.length - 1].end).indexOf(last) >= 0 ? text.slice(run[run.length - 1].end).indexOf(last) : 0) + last.length;
-    const short: string[] = [];
-    for (const it0 of items) {
-      const it = it0.replace(LABEL, '').trim();
-      const sents = sentencesOf(it);
-      const first = (sents[0] ?? it).trim();
-      if (isFactSentence(first)) out.push({ text: heading ? `${heading}: ${first}` : first, context: '', kind: 'sentence' });
-      else if (first) short.push(first.replace(/[.;,:\s]+$/, ''));
-      if (sents.length > 1) prose.push(sents.slice(1).join(' '));
-    }
-    const shortItems = short.filter((x) => contentWords(x).length >= 1 && x.length <= 80);
-    if (shortItems.length >= 3) out.push({ text: `${heading || 'List'}: ${shortItems.join('; ')}.`, context: '', kind: 'list' });
-    if (tail && pos < text.length) {
-      // leave the tail for the next round (it may hold the next list's heading)
-      pos = text.indexOf(tail, Math.max(0, pos - 2)) >= 0 ? text.indexOf(tail, Math.max(0, pos - 2)) : pos;
-    }
+  for (const L of ol.lists) {
+    const usable = L.items.filter((it) => it.name && wordsN(it.name) <= 10);
+    const long = L.items.filter((it) => !(it.name && wordsN(it.name) <= 10));
+    for (const it of long) if (isFactSentence(it.raw)) out.push({ text: `${listTitle(L)}: ${it.raw}`, context: '', kind: 'sentence' });
+    if (usable.length < 2) continue;
+    const title = listTitle(L);
+    let members = 0;
+    const listText = `${title}: ${usable.map((x) => x.name).join('; ')}.`;
+    usable.forEach((it, i) => {
+      const canDefine = usable.length >= 3 && !!it.expl && wordsN(it.expl) >= 4 && !explGivesAway(it.name, it.expl);
+      // every item is used once: even items are "member" keys, odd items with an explanation are "define" ones
+      const fact = (kind: 'member' | 'define'): RawFact =>
+        kind === 'member'
+          ? { text: listText, context: it.expl ? `${it.name} – ${it.expl}` : '', kind, list: L, item: L.items.indexOf(it) }
+          : { text: `${title}: ${it.name} – ${it.expl}`, context: listText, kind, list: L, item: L.items.indexOf(it) };
+      if (i % 2 === 1) {
+        if (canDefine) out.push(fact('define'));
+      } else if (L.heading) {
+        // first key: "which of these is one of …"; second: "which of these is NOT one of …" (the key comes from
+        // outside the list); more would repeat the same question, so later even items are left out
+        if (members === 0) out.push(fact('member'));
+        else if (members === 1 && usable.length >= 3) out.push({ ...fact('member'), neg: true });
+        members++;
+      }
+      else if (canDefine) out.push(fact('define'));
+    });
   }
-  if (pos < text.length) prose.push(text.slice(pos));
-  const sents = prose.flatMap((p) => sentencesOf(p)).map((x) => x.replace(LABEL, '').trim()).filter(Boolean);
-  sents.forEach((x, i) => {
-    if (!isFactSentence(x)) return;
-    // "It involves monitoring public opinion…": the model needs the sentence before to know what "it" is.
-    const lead = /^(?:it|they|this|these|that|those|he|she|its|their|such)\b/i.test(x) && sents[i - 1] ? sents[i - 1].slice(0, 300) : undefined;
-    out.push({ text: x.length > 360 ? x.slice(0, 360).replace(/\s+\S*$/, '') + '…' : x, context: [sents[i - 1], sents[i + 1]].filter(Boolean).join(' ').slice(0, 400), kind: 'sentence', lead });
-  });
+  for (const P of ol.prose) {
+    const sents = sentencesOf(P.text).map((x) => x.replace(LABEL, '').trim()).filter(Boolean);
+    sents.forEach((x, i) => {
+      if (!isFactSentence(x)) return;
+      const lead = /^(?:it|they|this|these|that|those|he|she|its|their|such)\b/i.test(x) && sents[i - 1] ? sents[i - 1].slice(0, 300) : undefined;
+      out.push({
+        text: x.length > 360 ? x.slice(0, 360).replace(/\s+\S*$/, '') + '…' : x,
+        context: [sents[i - 1], sents[i + 1]].filter(Boolean).join(' ').slice(0, 400),
+        kind: 'sentence',
+        lead,
+        heading: P.heading,
+      });
+    });
+  }
   // Distinct only: the same sentence twice, or one that repeats 80% of another's words, counts once.
   const seen: Set<string>[] = [];
   const keys = new Set<string>();
   return out.filter((f) => {
-    const core = f.text.replace(/^[^:]{1,90}:\s+/, ''); // compare without the list heading
+    if (f.kind !== 'sentence') return true;
+    const core = f.text.replace(/^[^:]{1,90}:\s+/, '');
     const k = factKey(core);
     if (!k || keys.has(k)) return false;
     const ws = new Set(contentWords(core));
-    if (seen.some((s) => { let both = 0; for (const w of ws) if (s.has(w)) both++; return both / Math.max(1, Math.min(ws.size, s.size)) >= 0.8; })) return false;
+    if (seen.some((st) => { let both = 0; for (const w of ws) if (st.has(w)) both++; return both / Math.max(1, Math.min(ws.size, st.size)) >= 0.8; })) return false;
     keys.add(k);
     seen.push(ws);
     return true;
   });
 }
+
+const wordsN = (t: string) => (t.match(/\S+/g) ?? []).length;
+/** "Two-way communication – Two-way communication means…" would hand the answer over. */
+function explGivesAway(name: string, expl: string) {
+  const nw = contentWords(name);
+  if (!nw.length) return true;
+  const ew = new Set(contentWords(expl).map(stem));
+  return nw.filter((w) => ew.has(stem(w))).length / nw.length >= 0.5;
+}
+const stem = (w: string) => w.replace(/(?:ing|ed|es|s)$/, '');
 
 /** Distinct facts of the given passages, note by note, each tied to the passage it sits in (for "From your notes"). */
 export function factsOf(chunks: Pick<StoredChunk, 'id' | 'text' | 'docId'>[]): Fact[] {
@@ -185,30 +213,57 @@ export function factsOf(chunks: Pick<StoredChunk, 'id' | 'text' | 'docId'>[]): F
     byDoc.get(k)!.push(c);
   }
   const out: Fact[] = [];
-  for (const list of byDoc.values()) {
+  for (const [docId, list] of byDoc) {
     const norm = list.map((c) => ({ id: c.id, text: c.text.replace(/\s+/g, ' ') }));
-    for (const f of factsOfText(mergeChunks(list.map((c) => c.text)))) {
-      const core = f.text.replace(/^[^:]{1,90}:\s+/, '');
-      const probe = (f.kind === 'list' ? core.split(';')[0] : core).slice(0, 40).replace(/…$/, '');
+    const full = mergeChunks(list.map((c) => c.text));
+    const lines = notesLines(full);
+    const lists = outlineOf(full).lists;
+    const keep = properWords(full);
+    for (const f of factsOfText(full)) {
+      const probeSrc = f.kind === 'sentence' ? f.text.replace(/^[^:]{1,90}:\s+/, '') : f.list!.items[f.item!].raw;
+      const probe = probeSrc.replace(/\s+/g, ' ').slice(0, 40).replace(/…$/, '');
       const home = norm.find((c) => c.text.includes(probe)) ?? norm.find((c) => c.text.includes(probe.slice(0, 20))) ?? norm[0];
-      out.push({ ...f, chunkId: home.id });
+      out.push({ ...f, chunkId: home.id, docKey: docId, notes: lines, lists, keep });
     }
   }
   return out;
 }
 
-/** Facts in one note's passages (done once when the note is added; the count is saved with the note). */
-export function countFacts(texts: string[]): number {
-  return factsOfText(mergeChunks(texts)).length;
+/** Lines and sentences of a whole note (used to prove a made-up wrong option is NOT in the notes). */
+export function notesLines(full: string): string[] {
+  return restoreLines(full)
+    .split('\n')
+    .flatMap((l) => sentencesOf(l.replace(/^\s*\(?(?:\d{1,2}|[a-hA-H]|[ivx]{1,4})[.)]\s+/, '')))
+    .map((x) => x.trim())
+    .filter(Boolean);
 }
 
-/** Share of facts the quiz can reliably turn into good, different questions (measured with the real model on
- *  short lecture notes; kept low on purpose so the promised number is met). */
-export const CAPACITY_YIELD = 0.55;
+/** True when an option says (nearly) what some line of the notes says: then it is not safely wrong. */
+export function inNotes(opt: string, lines: string[]): boolean {
+  const ow = [...new Set(contentWords(opt).map(stem))];
+  if (!ow.length) return false;
+  for (const l of lines) {
+    const lw = new Set(contentWords(l).map(stem));
+    const hit = ow.filter((w) => lw.has(w)).length;
+    if (ow.length === 1 ? hit === 1 && contentWords(l).length <= 6 : hit / ow.length >= 0.75 || (ow.length >= 3 && hit >= ow.length - 1)) return true;
+  }
+  return false;
+}
 
-/** How many different questions a number of facts supports (conservative). */
-export function capacityFromFacts(nFacts: number): number {
-  return Math.max(0, Math.floor(nFacts * CAPACITY_YIELD));
+const YIELD: Record<Fact['kind'], number> = { define: 0.95, member: 0.9, sentence: 0.5 };
+/** How many different questions one note's passages can carry (worked out once when the note is added). */
+export function countFacts(texts: string[]): number {
+  const fs = factsOfText(mergeChunks(texts));
+  return Math.floor(fs.reduce((n, f) => n + YIELD[f.kind], 0) * 100) / 100;
+}
+
+/** v1.0.17: the stored number is already the expected question count (each kind has its own measured yield). */
+export const CAPACITY_YIELD = 1;
+export const CAPACITY_VERSION = 2;
+
+/** How many different questions the notes support (conservative). */
+export function capacityFromFacts(units: number): number {
+  return Math.max(0, Math.floor(units * CAPACITY_YIELD));
 }
 
 // ---------------------------------------------------------------- options --------------------------------------
@@ -337,11 +392,15 @@ export function parseFactMcq(raw: string, slot?: number, rand: () => number = Ma
   // Wrong options cut off by the cap ("…between the C&") are dropped; so are ones that contain the answer or say
   // the same thing ("To connect buyers with sellers" next to "To connect buyers and sellers"): two right answers.
   const ansWords = new Set(contentWords(ansRaw));
+  // v1.0.17: a wrong option that shares a word (or a word stem: relations / relationships) with the answer is a
+  // variant of it ("The Jiji app" next to "The Jiji platform", "Establishing relations" next to "Building
+  // relationships"): a student could argue for it, so it is dropped. Numbers and dates are compared as wholes.
+  const ansStems = [...ansWords].filter((w) => !/^\d+$/.test(w));
+  const close = (a: string, b: string) => a === b || stem(a) === stem(b) || (a.length >= 6 && b.length >= 6 && a.slice(0, 6) === b.slice(0, 6));
   const wrongIn = (Array.isArray(o?.wrong) ? o.wrong : []).filter((x: any) => typeof x === 'string' && x.trim() && x.trim().length < cap).filter((x: string) => {
     const ws = contentWords(x);
     if (!ansWords.size || !ws.length) return true;
-    const hasAll = [...ansWords].every((w) => ws.includes(w));
-    return !hasAll;
+    return !ws.some((w) => !/^\d+$/.test(w) && ansStems.some((a) => close(a, w)));
   });
   const bal = balanceOptions(ansRaw, wrongIn);
   if (!bal) return null;
@@ -449,6 +508,220 @@ export function parseListMcq(raw: string, f: Pick<Fact, 'text'>, pickItem: numbe
   return { question, answer, options, correct: at };
 }
 
+// ---------------------------------------------------------------- list questions (v1.0.17) -----------------
+/** Words written with a capital in the middle of a sentence (names, "Public Affairs") or in ALL CAPS stay that way. */
+export function properWords(full: string): Set<string> {
+  const keep = new Set<string>();
+  for (const m of String(full ?? '').matchAll(/(?<=\b[a-z][a-z0-9]*[,;]?[ \t]+)([A-Z][A-Za-z'’-]+(?:[ \t]+[A-Z][A-Za-z'’-]+)*)/g))
+    for (const w of m[1].split(/[ \t]+/)) keep.add(w.toLowerCase());
+  for (const m of String(full ?? '').matchAll(/\b[A-Z]{2,}\b/g)) keep.add(m[0].toLowerCase());
+  return keep;
+}
+const phrase = (t: string, keep: Set<string>) =>
+  t
+    .split(/\s+/)
+    .map((w) => (/^[A-Z0-9]{2,}$/.test(w) || /[A-Z].*[A-Z]/.test(w.slice(1)) || keep.has(w.toLowerCase().replace(/[^a-z'’-]/g, '')) ? w : w.toLowerCase()))
+    .join(' ');
+const MASS = /^(importance|significance|relevance|role|purpose|scope|value|need)\s+(of|to|for)\s+(.+)$/i;
+const STOPPER = /^(?:of|to|for|in|by|on|at|used|faced|with|from|among|between|and)$/i;
+/** "Challenges of Public Affairs" -> "challenges of Public Affairs" when its head noun is plural, else null. */
+function pluralPhrase(h: string, keep: Set<string>): string | null {
+  const ws = h.split(/\s+/);
+  for (const w of ws.slice(0, 5)) {
+    if (STOPPER.test(w)) return null;
+    if (/^[A-Za-z][a-z]{2,}s$/.test(w) && !/ss$/.test(w) && !keep.has(w.toLowerCase())) return phrase(h, keep);
+  }
+  return null;
+}
+const subOf = (L: Pick<OutlineList, 'sub'>, keep: Set<string>) => (L.sub ? ' ' + phrase(lowerFirst(L.sub), keep) : '');
+const cleanHeading = (h: string) => {
+  const t = h.replace(/^the\s+/i, '').replace(/[:\s-]+$/, '').trim();
+  // "Nature/Characteristics of Public Affairs" -> "Characteristics of Public Affairs"
+  const m = t.match(/^(\w+)\/(\w+)(\s.*)?$/);
+  return m ? (/s$/.test(m[2]) ? m[2] : m[1]) + (m[3] ?? '') : t;
+};
+
+/** "According to your notes, which of these is an importance of Public Affairs to government?" */
+export function memberQuestion(L: Pick<OutlineList, 'heading' | 'sub'>, keep: Set<string> = new Set(), neg = false): string {
+  const h = cleanHeading(L.heading);
+  if (!h || h.length > 80) return '';
+  const not = neg ? 'NOT ' : '';
+  const mass = h.match(MASS);
+  if (mass) {
+    const n = mass[1].toLowerCase();
+    return `According to your notes, which of these is ${not}${/^[aeiou]/.test(n) ? 'an' : 'a'} ${n} ${mass[2].toLowerCase()} ${phrase(mass[3], keep)}${subOf(L, keep)}?`;
+  }
+  const pl = pluralPhrase(h, keep);
+  if (pl) return `According to your notes, which of these is ${not}one of the ${pl}${subOf(L, keep)}?`;
+  return `According to your notes, which of these is ${not}listed under “${h}${L.sub ? ` – ${L.sub}` : ''}”?`;
+}
+
+/** "Which of the objectives of Public Affairs in your notes is explained as “…”?" */
+export function defineQuestion(L: Pick<OutlineList, 'heading' | 'sub'>, expl: string, keep: Set<string> = new Set()): string {
+  const h = cleanHeading(L.heading);
+  const e0 = (sentencesOf(expl)[0] ?? expl).trim().replace(/[.;:\s]+$/, '');
+  const e = e0.length > 170 ? e0.slice(0, 170).replace(/\s+\S*$/, '') + '…' : e0;
+  if (!e) return '';
+  const pl = h ? pluralPhrase(h, keep) : null;
+  if (pl && !MASS.test(h)) return `Which of the ${pl}${subOf(L, keep)} in your notes is explained as “${e}”?`;
+  if (h) return `Which point under “${h}${L.sub ? ` – ${L.sub}` : ''}” in your notes is explained as “${e}”?`;
+  return `Which point in your notes is explained as “${e}”?`;
+}
+
+const simW = (a: string, b: string) => {
+  const aw = [...new Set(contentWords(a).map(stem))];
+  const bw = new Set(contentWords(b).map(stem));
+  if (!aw.length || !bw.size) return 0;
+  return aw.filter((w) => bw.has(w)).length / Math.min(aw.length, bw.size);
+};
+const nearAny = (x: string, list: string[], t = 0.6) => list.some((y) => simW(x, y) >= t);
+const styleOf = (x: string) => (/^to\s/i.test(x) ? 'to' : /^[A-Z][a-z]+s\s/.test(x) ? 'verb' : 'noun');
+
+/** Wrong-option candidates for a list question that come from the notes themselves, best first:
+ *  the same heading's other sub-lists ("To Organizations" items for a "To Government" question), then other
+ *  lists written in the same style. None is close to anything on the key's list. */
+export function listDistractors(f: Pick<Fact, 'list' | 'lists'>): { siblings: string[]; others: string[] } {
+  const L = f.list!;
+  const mine = L.items.map((x) => x.name);
+  const lists = f.lists ?? [];
+  const ok = (x: string) => !!x && wordsN(x) <= 10 && !nearAny(x, mine);
+  const siblings = lists
+    .filter((o) => o !== L && o.heading === L.heading && o.sub !== L.sub)
+    .flatMap((o) => o.items.map((x) => x.name))
+    .filter(ok);
+  const style = styleOf(mine[0] ?? '');
+  const others = lists
+    .filter((o) => o !== L && o.heading !== L.heading)
+    .flatMap((o) => o.items.map((x) => x.name))
+    .filter((x) => ok(x) && styleOf(x) === style);
+  return { siblings: [...new Set(siblings)], others: [...new Set(others)] };
+}
+
+/** How many made-up wrong options a list question still needs from the model (0 = no model call). */
+export function memberNeedsModel(f: Fact): number {
+  const { siblings, others } = listDistractors(f);
+  const real = siblings.length + others.length;
+  return f.neg ? (real >= 1 ? 0 : 3) : Math.max(0, 3 - real);
+}
+
+export function buildMemberWrongPrompt(f: Pick<Fact, 'list'>) {
+  const L = f.list!;
+  const items = L.items.map((x) => x.name);
+  const system = 'You write wrong answers for a multiple-choice exam question. Each is a short phrase of 2 to 5 words: the same kind of thing as the list items, on the same topic, written in the same style, believable to a student, but NOT in the list. No jokes, names or places. JSON only.';
+  const user = `Topic: ${listTitle(L)}\nThe list: ${items.join('; ')}\n\nWrite three believable wrong answers that are not in the list. JSON:`;
+  return [
+    { role: 'system' as const, content: system },
+    { role: 'user' as const, content: user },
+  ];
+}
+
+const pickN = <T,>(a: T[], n: number, rand: () => number) => {
+  const b = a.slice();
+  for (let i = b.length - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1));
+    [b[i], b[j]] = [b[j], b[i]];
+  }
+  return b.slice(0, n);
+};
+const place = (answer: string, wrong: string[], slot: number | undefined, rand: () => number): Mcq => {
+  const n = wrong.length + 1;
+  const at = slot != null && slot >= 0 && slot < n ? slot : Math.floor(rand() * n);
+  return { question: '', answer, options: [...wrong.slice(0, at), answer, ...wrong.slice(at)], correct: at };
+};
+
+/** Model's made-up wrong answers for a list question, kept only when they are not in (or close to) the notes. */
+export function madeUpWrong(raw: string, f: Fact): string[] {
+  let o: any;
+  try {
+    const m = String(raw ?? '').match(/\{[\s\S]*\}/);
+    o = JSON.parse(m ? m[0] : raw);
+  } catch {
+    return [];
+  }
+  const mine = f.list!.items.map((x) => x.name);
+  const out: string[] = [];
+  for (const x of Array.isArray(o?.wrong) ? o.wrong : []) {
+    if (typeof x !== 'string' || x.trim().length >= WRONG_ONLY_SCHEMA.properties.wrong.items.maxLength - 2) continue;
+    const t = sentenceCase(stripOptionMarker(x), f.text);
+    if (!t || contentWords(t).length < 1 || wordsN(t) > 8) continue;
+    if (nearAny(t, mine, 0.5) || inNotes(t, f.notes ?? []) || nearAny(t, out, 0.6)) continue;
+    if ((styleOf(t) === 'to') !== (styleOf(mine[0] ?? '') === 'to')) continue; // "To reduce taxes" next to nouns is a give-away
+    out.push(t);
+  }
+  return out;
+}
+
+/** A list question from a 'member' fact. `made` are the model's checked made-up wrong answers (may be empty). */
+export function makeMemberMcq(f: Fact, made: string[], slot?: number, rand: () => number = Math.random): Mcq | null {
+  const L = f.list!;
+  const question = memberQuestion(L, f.keep, !!f.neg);
+  if (!question) return null;
+  const { siblings, others } = listDistractors(f);
+  const mine = L.items.map((x) => x.name).filter((x) => wordsN(x) <= 10);
+  if (f.neg) {
+    // the key is the one option NOT on the list; the wrong ones are listed items
+    const key = pickN(siblings, 1, rand)[0] ?? pickN(others, 1, rand)[0] ?? made[0];
+    if (!key || mine.length < 3) return null;
+    const wrong = pickN(mine, 3, rand);
+    const bal = balanceOptions(key, wrong);
+    if (!bal || bal.wrong.length < 3) return null;
+    return { ...place(bal.answer, bal.wrong, slot, rand), question };
+  }
+  const key = L.items[f.item ?? 0]?.name;
+  if (!key) return null;
+  // real phrases from the notes' other lists first (never on this list, so never a second right answer), then
+  // the model's made-up ones (already checked to be absent from the notes)
+  const pool = [...pickN(siblings, 3, rand), ...pickN(others, 3, rand), ...made];
+  const wrong: string[] = [];
+  for (const w of pool) if (wrong.length < 3 && !nearAny(w, wrong, 0.6) && !nearAny(w, [key], 0.5)) wrong.push(w);
+  const bal = balanceOptions(key, wrong);
+  if (!bal || bal.wrong.length < 2) return null;
+  return { ...place(bal.answer, bal.wrong, slot, rand), question };
+}
+
+/** A "which one is explained as …" question from a 'define' fact (no model needed). */
+export function makeDefineMcq(f: Fact, slot?: number, rand: () => number = Math.random): Mcq | null {
+  const L = f.list!;
+  const it = L.items[f.item ?? 0];
+  if (!it?.expl) return null;
+  const question = defineQuestion(L, it.expl, f.keep);
+  const others = L.items.filter((x) => x !== it && x.name && wordsN(x.name) <= 10).map((x) => x.name);
+  if (!question || others.length < 2) return null;
+  // another item whose own explanation says nearly the same thing would also fit: skip the question
+  if (L.items.some((x) => x !== it && x.expl && simW(x.expl, it.expl) >= 0.6)) return null;
+  const bal = balanceOptions(it.name, pickN(others, 3, rand));
+  if (!bal || bal.wrong.length < 2) return null;
+  return { ...place(bal.answer, bal.wrong, slot, rand), question };
+}
+
+// ---------------------------------------------------------------- guards for written questions (v1.0.17) ------
+const SUPERLATIVE = /\b(primar(?:y|ily)|main(?:ly)?|most(?:ly)?|best|major|biggest|chief(?:ly)?|principal(?:ly)?|greatest|foremost|leading|central|ultimate|fundamental(?:ly)?|key|top|core|overall|largest|smallest|least|largely|predominant(?:ly)?)\b/i;
+/** Why a model-written question must not be shown, or null. */
+export function questionProblem(q: string, factText: string): string | null {
+  const t = String(q ?? '');
+  // "What does 'To Government' imply?": a label or short phrase is not a fact
+  if (/\b(impl(?:y|ies|ied)|suggest(?:s|ed)?|connote|refers?\s+to|stands?\s+for|signif(?:y|ies))\b/i.test(t)) return 'asks what a phrase implies';
+  if (/["“'‘][^"”'’]{1,40}["”'’]/.test(t) && /\b(mean|means|meant|meaning|imply|refer|indicate)\b/i.test(t)) return 'asks what a quoted phrase means';
+  if (/\b(the|these|this)\s+(notes?|text|passage|excerpt|author|statement)\b/i.test(t)) return 'talks about "the notes"';
+  // "primary / main / most important" only when the notes themselves say so
+  const sup = t.match(SUPERLATIVE);
+  if (sup && !new RegExp(`\\b${sup[1]}`, 'i').test(factText)) return `superlative "${sup[1]}" not in the notes`;
+  if (/\b(?:most|least)\s+important\b/i.test(t) && !/\b(?:most|least)\s+important\b/i.test(factText)) return 'superlative not in the notes';
+  const qw = contentWords(t).map(stem);
+  const fw = new Set(contentWords(factText).map(stem));
+  if (!qw.some((w) => fw.has(w))) return 'question is not about this fact';
+  return null;
+}
+
+/** The key must be stated in the fact itself (most of its words, or verbatim), not guessed. */
+export function answerStated(answer: string, factText: string): boolean {
+  const aw = [...new Set(contentWords(answer).map(stem))];
+  if (!aw.length) return false;
+  const fw = new Set(contentWords(factText).map(stem));
+  const nums = (answer.match(/\d+/g) ?? []).every((n) => factText.includes(n));
+  return nums && aw.filter((w) => fw.has(w)).length / aw.length >= 0.7;
+}
+
 // One worked example teaches the 1B model the exact shape (a real question, short options of equal length) far
 // better than rules alone; it costs ~70 prompt tokens.
 const EXAMPLE_NOTE = 'Photosynthesis takes place in the chloroplasts of plant cells, using light energy.';
@@ -456,9 +729,9 @@ const EXAMPLE_JSON = '{"question":"Where does photosynthesis take place?","answe
 
 export function buildFactMcqPrompt(f: Pick<Fact, 'text' | 'context' | 'kind' | 'lead'>, attempt = 0) {
   const system =
-    'You write one multiple-choice exam question from a student\'s notes. The question ends with "?" and asks directly, like an exam; never mention "the notes" or "the text". ' +
-    'The correct answer is stated in the notes. The three wrong answers are believable but wrong, and different from each other. ' +
-    'Every answer is a short phrase of 1 to 6 words, all about the same length. JSON only.\n\n' +
+    'Write one multiple-choice exam question from a student\'s notes. Ask about a fact the notes state; the correct answer is written in the notes. ' +
+    'No "primary", "main" or "most important" unless the notes say it; never ask what a word or phrase means or implies. ' +
+    'Three believable wrong answers, different from each other. Every answer is a short phrase of 1 to 6 words. JSON only.\n\n' +
     `Example notes: ${EXAMPLE_NOTE}\nExample JSON: ${EXAMPLE_JSON}`;
   const angle = ANGLES[attempt % ANGLES.length];
   const user = `Notes: ${f.lead ? f.lead + ' ' : ''}${f.text}\n\n${angle ? angle + '\n' : ''}Write one multiple-choice question about these notes. JSON:`;
@@ -503,7 +776,19 @@ export async function writeQuiz(chunks: StoredChunk[], target: number, deps: Qui
     if (!groups.has(g)) groups.set(g, []);
     groups.get(g)!.push(f);
   }
-  const lanes = shuffle([...groups.values()].map((g) => shuffle(g.slice())));
+  // Questions that need no model (or only a few words from it) are spread through each lane, first one first:
+  // the first question shows almost at once and the next ones are written while the student answers.
+  const free = (f: Fact) => f.kind === 'define' || (f.kind === 'member' && memberNeedsModel(f) === 0);
+  const interleave = (g: Fact[]) => {
+    const a = shuffle(g.filter(free)), b = shuffle(g.filter((x) => !free(x)));
+    const out: Fact[] = [];
+    while (a.length || b.length) {
+      if (a.length) out.push(a.shift()!);
+      if (b.length) out.push(b.shift()!);
+    }
+    return out;
+  };
+  const lanes = shuffle([...groups.values()].map((g) => interleave(g.slice())));
   const order: Fact[] = [];
   for (let i = 0; order.length < facts.length; i++) {
     const lane = lanes[i % lanes.length];
@@ -513,7 +798,7 @@ export async function writeQuiz(chunks: StoredChunk[], target: number, deps: Qui
   }
   const goal = Math.min(target, facts.length);
   const slot = positionBag(rand);
-  const asked: { q: string; a: string; src: string }[] = [];
+  const asked: { q: string; a: string; src: string; kind: Fact['kind'] }[] = [];
   const common = commonEntities(chunks.map((c) => c.text));
   // Each fact gets up to 3 tries (a different wording angle each time), spread out: first pass over every fact,
   // then the facts that failed get their next try. Total attempts are capped so a hopeless note ends.
@@ -530,11 +815,13 @@ export async function writeQuiz(chunks: StoredChunk[], target: number, deps: Qui
       deps.onProgress?.(made, goal);
       let raw = '';
       let failedRun = false;
-      for (;;) {
+      // List questions need the model only for made-up wrong answers, and only when the notes don't give enough.
+      const need = f.kind === 'define' ? 0 : f.kind === 'member' ? memberNeedsModel(f) : 1;
+      for (; need > 0; ) {
         try {
           raw = await deps.generate(
-            f.kind === 'list' ? buildListWrongPrompt(f) : buildFactMcqPrompt(f, n),
-            f.kind === 'list' ? { maxTokens: 50, temp: 0.7, jsonSchema: WRONG_ONLY_SCHEMA } : { maxTokens: 120, temp: n ? 0.75 : 0.5, jsonSchema: FACT_MCQ_SCHEMA },
+            f.kind === 'member' ? buildMemberWrongPrompt(f) : buildFactMcqPrompt(f, n),
+            f.kind === 'member' ? { maxTokens: 45, temp: 0.7, jsonSchema: WRONG_ONLY_SCHEMA } : { maxTokens: 110, temp: n ? 0.75 : 0.5, jsonSchema: FACT_MCQ_SCHEMA },
           );
         } catch (e) {
           // An Ask took the model: wait our turn and write this same question again (the attempt doesn't count).
@@ -550,21 +837,38 @@ export async function writeQuiz(chunks: StoredChunk[], target: number, deps: Qui
         if (n + 1 < 3) failed.push(f);
         continue;
       }
-      attempts++;
+      if (need > 0) attempts++;
       tries.set(f, n + 1);
-      if (deps.shouldStop()) break;
       const src = byId.get(f.chunkId)!;
       const at = slot(4);
-      const parsed = f.kind === 'list' ? parseListMcq(raw, f, Math.floor(rand() * 8), at, rand) : parseFactMcq(raw, at, rand, `${f.text} ${f.context}`);
-      // List questions are built from the list itself, so their key is right by construction.
-      const keyed = !parsed ? null : f.kind === 'list' ? parsed : checkMcqKey(parsed, `${f.text} ${f.context}`.trim());
-      const dup = !!keyed && isNearDuplicate(keyed.question, asked, keyed.answer, common);
-      if (!keyed || dup) {
-        deps.onReject?.(!parsed ? 'format/length' : !keyed ? 'answer key' : 'duplicate', raw, f);
-        if ((tries.get(f) ?? 0) < 3) failed.push(f);
+      let keyed: Mcq | null = null;
+      let why = '';
+      if (f.kind === 'define') {
+        keyed = makeDefineMcq(f, at, rand);
+        why = 'define: options';
+      } else if (f.kind === 'member') {
+        keyed = makeMemberMcq(f, need > 0 ? madeUpWrong(raw, f) : [], at, rand);
+        why = 'list: not enough safe wrong options';
+      } else {
+        const parsed = parseFactMcq(raw, at, rand, `${f.text} ${f.context}`);
+        const factOnly = `${f.lead ? f.lead + ' ' : ''}${f.text}`;
+        const prob = parsed ? questionProblem(parsed.question, factOnly) : 'format/length';
+        keyed = !parsed || prob ? null : checkMcqKey(parsed, `${f.text} ${f.context}`.trim());
+        if (keyed && !answerStated(keyed.answer, factOnly)) {
+          keyed = null;
+          why = 'answer not stated in the fact';
+        } else why = prob ?? 'answer key';
+      }
+      const dup = !!keyed && f.kind === 'sentence' && isNearDuplicate(keyed.question, asked.filter((x) => x.kind === 'sentence'), keyed.answer, common);
+      const same = !!keyed && asked.some((x) => x.q === keyed!.question && x.a === keyed!.answer);
+      if (!keyed || dup || same) {
+        deps.onReject?.(!keyed ? why : 'duplicate', raw, f);
+        if (f.kind === 'sentence' && (tries.get(f) ?? 0) < 3) failed.push(f);
+        else if (f.kind === 'member' && need > 0 && (tries.get(f) ?? 0) < 2) failed.push(f);
         continue;
       }
-      asked.push({ q: keyed.question, a: keyed.answer, src: f.chunkId });
+      asked.push({ q: keyed.question, a: keyed.answer, src: f.chunkId, kind: f.kind });
+      if (deps.shouldStop()) break;
       made++;
       deps.onQuestion({ ...keyed, source: src, fact: f.text });
     }

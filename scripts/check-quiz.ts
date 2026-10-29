@@ -4,6 +4,9 @@
 import { stripOptionMarker, balanceOptions, parseFactMcq, positionBag, factsOfText, factsOf, countFacts, capacityFromFacts, mergeChunks, listQuestion, parseListMcq, writeQuiz, Preempted as QuizPreempted } from '../src/quizGen.ts';
 import { PriorityLock, Preempted, PRI } from '../src/llmLock.ts';
 import { chunkText } from '../src/chunk.ts';
+import { outlineOf } from '../src/outline.ts';
+import { memberQuestion, properWords, makeMemberMcq, questionProblem, inNotes, answerStated } from '../src/quizGen.ts';
+import { listAnswer, stripListNumbers } from '../src/rag.ts';
 // same math as src/keyboard.tsx (node can't load .tsx)
 const KEYBOARD_GAP = 10;
 const keyboardPad = (b: number | null, t: number | null) => (b == null || t == null ? 0 : Math.max(0, Math.round(b - t)));
@@ -53,9 +56,9 @@ check(counts.every((c) => c === 100), `answer letters evenly spread ${counts.joi
 const pa = `Meaning of Public Affairs\n\nPublic Affairs is the management of communication between an organization and its various publics on matters such as public interest, government policies, community development, and social responsibility.\n\nChallenges of Public Affairs\n1. Financial constraints\n2. Political interference\n3. Negative media coverage\n4. Misinformation and fake news\nA broader communication function. Deals with all publics, especially external stakeholders.`;
 const chunks = chunkText(pa).map((c, i) => ({ id: 'c' + i, docId: 'd', text: c.text, vec: [] as number[] }));
 const facts = factsOf(chunks);
-check(facts.some((f) => f.kind === 'list' && f.text.startsWith('Challenges of Public Affairs: Financial constraints; Political interference; Negative media coverage; Misinformation and fake news')), 'numbered list found with its heading');
-check(countFacts(chunks.map((c) => c.text)) === facts.length, 'count at import == facts at quiz time');
-check(capacityFromFacts(10) === 5 && capacityFromFacts(19) === 10 && capacityFromFacts(1) === 0, 'capacity is conservative (55% of facts)');
+check(facts.some((f) => f.kind === 'member' && f.text.startsWith('Challenges of Public Affairs: Financial constraints; Political interference; Negative media coverage; Misinformation and fake news')), 'numbered list found with its heading');
+check(countFacts(chunks.map((c) => c.text)) > 0 && countFacts(chunks.map((c) => c.text)) <= facts.length, 'expected question count at import is at most the facts at quiz time');
+check(capacityFromFacts(10.9) === 10 && capacityFromFacts(0.5) === 0, 'capacity is the stored expected count, rounded down');
 check(parseFactMcq('{"question":"Why does anaerobic respiration occur when oxygen is scarce?","answer":"Anaerobic respiration happens when oxygen is scarce","wrong":["It is a backup","It makes heat","It is faster"]}') === null, 'answer that only repeats the question is dropped');
 check(mergeChunks(['alpha beta gamma delta epsilon zeta eta theta', 'delta epsilon zeta eta theta iota kappa']) === 'alpha beta gamma delta epsilon zeta eta theta iota kappa', 'overlapping passages merge');
 check(listQuestion('Challenges of Public Affairs') === 'Which of these is one of the challenges of public affairs?', 'list question wording');
@@ -136,6 +139,29 @@ const containerBottom = 873 - 32 - 48; // bottom of the Ask area in RN coordinat
 const pad = keyboardPad(containerBottom, top - KEYBOARD_GAP);
 check(containerBottom - pad + 32 <= 873 - 330 - KEYBOARD_GAP + 0.5, 'input bar bottom sits fully above the keyboard on screen');
 check(imeTop(330, 873, undefined) === 873 - 330, 'old native event without offset still works');
+
+// 7. v1.0.17: list labels, superlatives, list answers
+{
+  const notes = `Importance of Public Affairs\nTo Government\n1. Encourages citizen participation\n2. Promotes transparency\n3. Improves communication\nTo Organizations\n1. Protects corporate reputation\n2. Prevents conflict\n3. Supports business growth\n\nObjectives of Public Affairs\n1. To inform the public – Organizations explain their policies to the people.\n2. To influence public policy – Practitioners present the organization's position to lawmakers.\n3. To build goodwill – A good reputation makes it easier to operate.`;
+  const ol = outlineOf(notes);
+  check(ol.lists.length === 3 && ol.lists[0].sub === 'To Government' && ol.lists[1].sub === 'To Organizations', 'sub-labels are labels of their lists');
+  check(!ol.lists.flatMap((l) => l.items.map((x) => x.name)).some((n) => /^To (Government|Organizations)/.test(n)), 'sub-labels are never items');
+  const flat = outlineOf(notes.replace(/\s+/g, ' '));
+  check(flat.lists.length === 3 && flat.lists[1].sub === 'To Organizations', 'flattened (pre-1.0.17) notes keep their sub-labels');
+  check(memberQuestion(ol.lists[0], properWords(notes)) === 'According to your notes, which of these is an importance of Public Affairs to government?', `member question wording (${memberQuestion(ol.lists[0], properWords(notes))})`);
+  const fs = factsOf(chunkText(notes).map((c, i) => ({ id: 'n' + i, docId: 'n', text: c.text })));
+  const gov = fs.find((f) => f.kind === 'member' && f.list?.sub === 'To Government' && !f.neg)!;
+  const mq = makeMemberMcq(gov, [], 0, () => 0.3);
+  check(!!mq && mq.answer === 'Encourages citizen participation' && mq.options.filter((o) => ['Encourages citizen participation', 'Promotes transparency', 'Improves communication'].includes(o)).length === 1, 'list question: exactly one option from the key list');
+  check(questionProblem("What does 'To Government' in the notes imply?", 'To Government: encourages citizen participation') !== null, 'rejects "what does X imply"');
+  check(questionProblem('What is the primary objective of Public Affairs?', 'Objectives of Public Affairs: To inform the public') !== null, 'rejects "primary" when the notes do not say it');
+  check(questionProblem('What is the main purpose of OLX?', 'The main purpose of OLX was to connect buyers and sellers.') === null, 'keeps "main" when the notes say it');
+  check(inNotes('To promote the public interest', ['Public Affairs deals with issues of public interest.']), 'a paraphrase of the notes is not a safe wrong option');
+  const la = listAnswer('Importance of public affairs', notes);
+  check(!!la && la.answer.includes('To Government: encourages citizen participation') && la.answer.includes('To Organizations:') && !/\d\./.test(la.answer), 'Ask: whole list with sub-labels, no "1." fragments');
+  check(stripListNumbers('To Government 1. Encourages citizen participation 2. Promotes transparency') === 'To Government Encourages citizen participation Promotes transparency', 'stray list numbers stripped');
+  check(answerStated('Jiji', 'In 2019 Jiji acquired OLX Nigeria.') && !answerStated('Jumia', 'In 2019 Jiji acquired OLX Nigeria.'), 'key must be stated in the fact');
+}
 
 if (!ok) process.exit(1);
 console.log('ALL OK');

@@ -17,17 +17,25 @@ export function normalise(text: string): string {
     .trim();
 }
 
-function splitSentences(paragraph: string): string[] {
-  const parts = paragraph.match(/[^.!?\n]+(?:[.!?]+|\n|$)/g);
-  return (parts ?? [paragraph]).map((s) => s.trim()).filter(Boolean);
+// v1.0.17: each piece remembers whether it ended a line, so list items and headings stay on their own lines
+// (the quiz and Ask read lists with their headings; flattened text made "To Government 1. …" fragments).
+function splitSentences(paragraph: string): { text: string; nl: boolean }[] {
+  const out: { text: string; nl: boolean }[] = [];
+  for (const m of paragraph.matchAll(/[^.!?\n]+(?:[.!?]+|\n|$)/g)) {
+    const end = (m.index ?? 0) + m[0].length;
+    const text = m[0].trim();
+    if (text) out.push({ text, nl: /\n\s*$/.test(m[0]) || /^[ \t]*\n/.test(paragraph.slice(end)) });
+  }
+  return out.length ? out : [{ text: paragraph.trim(), nl: false }];
 }
 
 export function chunkText(text: string, page?: number): RawChunk[] {
   const clean = normalise(text);
   if (!clean) return [];
-  const paragraphs = clean.split(/\n\s*\n/).map((p) => p.replace(/\n/g, ' ').trim()).filter(Boolean);
+  const paragraphs = clean.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
   const chunks: RawChunk[] = [];
   let buf = '';
+  let sep = ' ';
 
   const flush = () => {
     const t = buf.trim();
@@ -37,7 +45,9 @@ export function chunkText(text: string, page?: number): RawChunk[] {
   };
 
   for (const para of paragraphs) {
-    for (let sentence of splitSentences(para)) {
+    sep = buf ? '\n' : '';
+    for (const piece of splitSentences(para)) {
+      let sentence = piece.text;
       while (sentence.length > MAX) {
         // very long run-on text: hard-split
         if (buf) flush();
@@ -46,7 +56,8 @@ export function chunkText(text: string, page?: number): RawChunk[] {
         flush();
       }
       if (buf.length + sentence.length + 1 > TARGET && buf.length > OVERLAP + 40) flush();
-      buf += (buf ? ' ' : '') + sentence;
+      buf += (buf ? sep || ' ' : '') + sentence;
+      sep = piece.nl ? '\n' : ' ';
     }
     if (buf.length > TARGET * 0.6) flush();
   }

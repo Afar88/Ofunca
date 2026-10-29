@@ -135,6 +135,41 @@ From a phone test of v1.0.14 on a Redmi Note 13.
 - **No more near-duplicate questions.** Repeats are now caught by topic, not just wording: shared topic words (with simple stemming, so *relationship/relationships*), the same pair of names (two OLX–Jiji questions), and the same correct answer all count. Names that run through the whole subject (e.g. "Public Affairs") don't count as a match. Each accepted question's source sentence is taken out of the passage for later questions, so the next question has to use a different fact. The "already asked" list is no longer put in the prompt: tested with the real model, the 1B model copied the listed question back (7 of 9 attempts asked about stomata); without it questions spread across passages. Check: `node --experimental-strip-types scripts/check-mcq-key.ts`.
 - **Trade-off:** the stricter checks throw away more of the small model's weak questions, so a quiz may need more attempts (the existing budget of 3× the questions, at least 12, still applies and the app still says "Made X of Y" when notes are short).
 
+## Fixes and features (v1.0.17)
+
+From a phone test of v1.0.16 on a Redmi Note 13 (GPU) with Public Affairs notes and an OLX Nigeria digital-marketing case, plus a code review.
+
+**Quiz questions: no more nonsense or two-right-answer questions**
+- **Notes are read as an outline** (`src/outline.ts`): headings, sub-labels, lists and prose. Line breaks are now kept when a note is added (they used to be turned into spaces, which glued "To Government" onto the list items). A sub-label inside a list ("To Government", "To Organizations", "To the Public") is treated as the label of its list, never as a fact. Lists wrapped onto several lines (photos, PDFs) are joined back up, and notes saved by older versions are repaired as well as possible (list markers and sub-labels are found again in the flattened text).
+- **Lists become proper questions, and their keys are right by construction.** *"According to your notes, which of these is an importance of Public Affairs to government?"* with one listed item as the answer; *"…which of these is NOT one of the challenges of Public Affairs?"*; and, when an item has its own explanation, *"Which of the objectives of Public Affairs in your notes is explained as “Potential problems are identified early before they become crises”?"* (the other items of the same list are the wrong options). Wrong options come first from the same heading's other sub-lists, then from the note's other lists, and only then from the model; anything the model makes up is thrown away if it is on the list, close to any list item, or says nearly what any line of the notes says (so "To promote the public interest" can't sit next to "To inform the public" when the notes mention the public interest).
+- **Banned question types.** A written question is dropped when it asks what a word or short phrase "means / implies / suggests / refers to", talks about "the notes/text", uses *primary, main, most, major, key, chiefly…* when the notes don't say so, isn't about the fact it was written from, or has a key whose words aren't stated in that fact. A wrong option that shares a word or word stem with the answer ("The Jiji app" next to "The Jiji platform", "Establishing relations" next to "Building relationships") is removed, because a student could argue for it. The prompt now says the same things up front.
+- **Capacity** is counted per question type (list and "explained as" questions almost always work; sentence questions about half the time). Notes added before v1.0.17 are counted again once, automatically.
+
+**Speed**
+- List and "explained as" questions need no model at all, or only three short wrong answers, so most questions now appear almost at once; they are spread through the quiz so the first question shows straight away and the next ones are written while you answer. Measured in the sandbox (Llama 3.2 1B, CPU, the same Public Affairs + OLX notes, 10 questions): **v1.0.16 16.1 s per question (50 model calls for 9 questions, ~800-character prompts) → v1.0.17 1.5–2.4 s per question (6–8 model calls for 10 questions)**. The phone's GPU is slower than the sandbox, but the number of model calls drops by about 85%, and that is where the 40–60 s per question went.
+- **Ask:** a question about a list in the notes (*"Importance of public affairs"*, *"What are the challenges of …"*, *"Objectives of …"*) is answered from the whole list with its sub-labels, in clean sentences, in milliseconds and without the model: *"To Government: encourages citizen participation, promotes transparency, … To Organizations: protects corporate reputation, …, prevents conflict and supports business growth. To the Public: …"*. Other questions send the model only the lines around the best match in each passage (prompt about 25–40% shorter) with a 140-token cap (was 160). Stray list numbers ("1.", "2)") are stripped from every answer.
+- No quality check was removed to buy speed.
+
+**Ask tab**
+- The quick suggestion chips ("Summarise the main ideas", "What are the key definitions?") are gone. The "Ask your notes" card text stays.
+
+**Adding notes: battery-style progress**
+- PDF / file, Snap photo, Paste text and **Save & index** no longer show a spinning circle. The button itself fills from left to right with a lighter candy colour, with a soft glow on the filling edge and a short label ("Reading page 3/5…", "Indexing… 60%", "Reading text…"). Real progress is shown where it is known (PDF pages, indexing batches, the photo reader's steps); otherwise it fills smoothly towards the end and never claims to be done early. The button is disabled while it fills. The floating status bar uses the same mini fill.
+- The Paste / Snap review box now stays open while **Save & index** fills, and closes when the note is in. If indexing fails, your text is still there.
+
+**Code review fixes**
+- A note's text lost its line breaks when it was added, which broke lists and their headings (fixed in `src/chunk.ts`).
+- A lettered list ("a. Low-cost promotion") right after another list was filed under the previous list's heading.
+- Review my mistakes treated two list questions with the same wording but different answers as one mistake; they are now told apart by question + answer.
+- Updated question counts for older notes were saved but not shown until the next restart.
+- Follow-up replies (Shorter / Reply) also send only the relevant lines, like Ask.
+- `scripts/sign-apk.sh` now works on ARM build machines: when `zipalign` can't run it checks the APK's alignment with Python (4-byte stored entries, 16 KB-aligned native libraries) before signing.
+- New checks in `scripts/check-quiz.ts` (run in CI): sub-labels never become facts, flattened notes keep their sub-labels, list-question wording, exactly one option from the key's list, banned "implies"/"primary" questions, paraphrase detection, whole-list Ask answers with no "1." fragments.
+
+**Trade-offs**
+- More of the model's weaker sentence questions are dropped, so a quiz leans on list questions when the notes have lists.
+- Wrong options for list questions are often real phrases from your other lists. That is deliberate: they are certainly not on the asked list, so the key can't be argued.
+
 ## Fixes and features (v1.0.16)
 
 From a phone test of v1.0.15 on a Redmi Note 13 (GPU), plus a full code audit.
@@ -173,7 +208,7 @@ From a phone test of v1.0.15 on a Redmi Note 13 (GPU), plus a full code audit.
 
 ## Install (Android phone, arm64, Android 10+)
 
-1. Download `Ofunca-v1.0.16.apk` to the phone.
+1. Download `Ofunca-v1.0.17.apk` to the phone.
 2. Open it. If asked, allow your browser or file manager to *install unknown apps*, then tap **Install**.
 3. Open **Ofunca**. On **Wi‑Fi**, tap **Download AI models** (≈1.05 GB, one time; the photo reader is built into the app).
 4. When you see **"All set!"** you can switch on airplane mode. Everything keeps working.

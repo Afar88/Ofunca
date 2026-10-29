@@ -65,7 +65,7 @@ export function focusHits(hits: Hit[], max = 3, margin = 0.06): Hit[] {
 
 export function buildAnswerPrompt(question: string, hits: Hit[]) {
   const context = hits
-    .map((h, i) => `[${i + 1}] ${h.chunk.text}`)
+    .map((h, i) => `[${i + 1}] ${compactPassage(question, h.chunk.text)}`)
     .join('\n\n');
   const system =
     'You are Ofunca, a tutor. Answer ONLY the exact question asked, using ONLY the numbered note excerpts. ' +
@@ -81,7 +81,7 @@ export function buildAnswerPrompt(question: string, hits: Hit[]) {
 
 /** Follow-up on an earlier answer ("make it shorter", or any reply), using the same passages. */
 export function buildFollowUpPrompt(prevQuestion: string, prevAnswer: string, followUp: string, hits: Hit[]) {
-  const context = hits.map((h, i) => `[${i + 1}] ${h.chunk.text}`).join('\n\n');
+  const context = hits.map((h, i) => `[${i + 1}] ${compactPassage(`${prevQuestion} ${followUp}`, h.chunk.text)}`).join('\n\n');
   const system =
     'You are Ofunca, a tutor. The student is replying to your earlier answer. Use ONLY the note excerpts and your earlier answer. ' +
     'Do exactly what the student asks (for example: shorter, simpler, one point only). Keep it brief. ' +
@@ -212,6 +212,7 @@ export function cleanAnswer(text: string): string {
     .replace(/\(\s*(?:excerpt|source)\s*\d+\s*\)/gi, '')
     .replace(/\b(?:note\s+)?excerpts?\s*\d+\s*[:,-]?\s*/gi, '')
     .replace(/[\[\]]/g, '') // any bracket left over from a fragment
+    .replace(/(^|[\s:;,(])\(?\d{1,2}[.)](?=\s+[A-Za-z“"])/g, '$1') // "To Government 1. Encourages" (v1.0.17)
     .replace(/[ \t]{2,}/g, ' ')
     .replace(/ +([.,;:!?])/g, '$1')
     .trim();
@@ -687,4 +688,101 @@ export function tidySnippetStart(t: string): string {
   if (m && m.index !== undefined) return s.slice(m.index + m[0].length);
   const sp = s.indexOf(' ');
   return sp > 0 && sp < 25 ? s.slice(sp + 1) : s;
+}
+
+// ---------------------------------------------------------------- v1.0.17: whole-list answers ----------------
+import { outlineOf, lowerFirst, type OutlineList } from './outline';
+
+const ASK_FILLER = /^(?:please\s+)?(?:what\s+(?:are|is|were)\s+(?:the\s+)?|list\s+(?:the\s+|out\s+(?:the\s+)?)?|state\s+(?:the\s+)?|give\s+(?:me\s+)?(?:the\s+)?|mention\s+(?:the\s+)?|outline\s+(?:the\s+)?|enumerate\s+(?:the\s+)?|name\s+(?:the\s+)?|tell\s+me\s+(?:about\s+)?(?:the\s+)?|explain\s+(?:the\s+)?|discuss\s+(?:the\s+)?|highlight\s+(?:the\s+)?)/i;
+const askWords = (t: string) => keyWords(t);
+
+/** "Importance of public affairs" / "What are the challenges of Public Affairs?" asked about a list in the notes:
+ *  answered straight from the list, with its sub-labels, in clean sentences (no model, no "1." fragments).
+ *  Returns null when the question is not about one list heading. */
+export function listAnswer(question: string, noteText: string): { answer: string; lists: OutlineList[] } | null {
+  const q = String(question ?? '').trim().replace(/[?.!\s]+$/, '').replace(ASK_FILLER, '');
+  const qw = askWords(q);
+  if (!qw.length || qw.length > 9) return null;
+  const ol = outlineOf(noteText);
+  const groups = new Map<string, OutlineList[]>();
+  for (const l of ol.lists) {
+    if (!l.heading) continue;
+    if (!groups.has(l.heading)) groups.set(l.heading, []);
+    groups.get(l.heading)!.push(l);
+  }
+  let best: { lists: OutlineList[]; heading: string; score: number } | null = null;
+  for (const [heading, lists] of groups) {
+    const hw = askWords(heading.replace(/\//g, ' '));
+    if (!hw.length) continue;
+    const both = hw.filter((w) => qw.includes(w)).length;
+    // the question must name the heading and be mostly about it (sub-label words may be extra)
+    const subW = new Set(lists.flatMap((l) => askWords(l.sub)));
+    const extra = qw.filter((w) => !hw.includes(w) && !subW.has(w)).length;
+    if (both / hw.length < 0.7 || both < Math.min(2, hw.length) || extra > 1) continue;
+    const score = both - extra;
+    if (!best || score > best.score) best = { lists, heading, score };
+  }
+  if (!best) return null;
+  let lists = best.lists;
+  // "importance of public affairs to government": only that sub-list
+  const subHit = lists.filter((l) => l.sub && askWords(l.sub).some((w) => qw.includes(w) && !askWords(best!.heading).includes(w)));
+  if (subHit.length) lists = subHit;
+  const join = (xs: string[]) => {
+    if (xs.length <= 1) return xs.join('');
+    const sep = xs.some((x) => /\s(?:and|or)\s|,/.test(x)) ? '; ' : ', '; // "fake news and lack of…" stays readable
+    return `${xs.slice(0, -1).join(sep)}${sep === '; ' ? '; and ' : ' and '}${xs[xs.length - 1]}`;
+  };
+  const item = (x: string) => lowerFirst(x.replace(/[.;:\s]+$/, ''));
+  const head = lowerFirst(best.heading.replace(/[:\s]+$/, ''));
+  let answer: string;
+  if (lists.length === 1 && !lists[0].sub) {
+    const names = lists[0].items.map((x) => item(x.name));
+    answer = `Your notes list ${names.length} ${head}: ${join(names)}.`;
+  } else {
+    const lines = lists.map((l) => {
+      const names = l.items.map((x) => item(x.name));
+      return `${l.sub ? `${l.sub.replace(/[:\s]+$/, '')}: ` : ''}${join(names)}.`;
+    });
+    answer = `${head[0].toUpperCase()}${head.slice(1)}:\n${lines.join('\n')}`;
+  }
+  return { answer, lists };
+}
+
+/** Shorter context for the answer prompt: from each passage, the lines around the one that best matches the
+ *  question (a list keeps its heading), ~450 characters each. Less reading = faster answers on a phone. */
+export function compactPassage(question: string, text: string, max = 520): string {
+  const t = String(text ?? '');
+  if (t.length <= max + 120) return t;
+  const lines = t.split('\n').map((x) => x.trim()).filter(Boolean);
+  const qw = new Set(keyWords(question));
+  // lines, with long lines (a whole paragraph) cut into sentences so the right sentence is never cut off
+  const pieces = lines.flatMap((l) => (l.length > 160 ? sentencesOf(l) : [l]));
+  let bi = 0;
+  let bs = -1;
+  pieces.forEach((l, i) => {
+    const ws = keyWords(l);
+    const sc = ws.filter((w) => qw.has(w)).length / Math.sqrt(ws.length + 1);
+    if (sc > bs) {
+      bs = sc;
+      bi = i;
+    }
+  });
+  let a = Math.max(0, bi - 1);
+  let b = bi + 1;
+  const len = () => pieces.slice(a, b).join('\n').length;
+  while (len() < max && (a > 0 || b < pieces.length)) {
+    if (b < pieces.length && pieces.slice(a, b + 1).join('\n').length <= max) b++;
+    else if (a > 0 && pieces.slice(a - 1, b).join('\n').length <= max) a--;
+    else break;
+  }
+  return pieces.slice(a, b).join('\n').slice(0, max + 80);
+}
+
+/** "To Government 1. Encourages citizen participation" -> no stray list numbers inside an answer. */
+export function stripListNumbers(t: string): string {
+  return String(t ?? '')
+    .replace(/(^|[\s:;,(])\(?\d{1,2}[.)](?=\s+[A-Za-z“"])/g, '$1')
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/\s+([.,;:])/g, '$1')
+    .trim();
 }
