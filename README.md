@@ -3,6 +3,8 @@
 **Ask your class notes anything, even in airplane mode.**
 An Android app that turns your own notes (PDFs, text files, pasted text or photos of handouts) into a private AI tutor. Every answer is grounded in *your* notes and shows the exact passages it came from. All the AI runs **on the phone** through [Tether's QVAC SDK](https://docs.qvac.tether.io). There is no cloud, no account and no data leaving the device.
 
+**📥 [Download Ofunca v1.0.17 (APK)](https://github.com/Afar88/Ofunca/releases/latest) · 🎬 [Watch the 2:38 demo](docs/Ofunca-demo.mp4)** (recorded in airplane mode on a Redmi Note 13)
+
 Built for the **AI Yako hackathon (Tether QVAC × DoraHacks)**. Suggested track: **Offline AI apps** (also eligible for the overall prize).
 
 ---
@@ -209,7 +211,7 @@ From a phone test of v1.0.15 on a Redmi Note 13 (GPU), plus a full code audit.
 
 ## Install (Android phone, arm64, Android 10+)
 
-1. Download `Ofunca-v1.0.17.apk` to the phone.
+1. Download `Ofunca-v1.0.17.apk` from the [latest release](https://github.com/Afar88/Ofunca/releases/latest) to the phone (SHA-256 `927e610ec090f9908c490c7e3b2774354bf5d41f2407daa09e74e0d6911a3ec3`).
 2. Open it. If asked, allow your browser or file manager to *install unknown apps*, then tap **Install**.
 3. Open **Ofunca**. On **Wi‑Fi**, tap **Download AI models** (≈1.05 GB, one time; the photo reader is built into the app).
 4. When you see **"All set!"** you can switch on airplane mode. Everything keeps working.
