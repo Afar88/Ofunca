@@ -786,3 +786,33 @@ export function stripListNumbers(t: string): string {
     .replace(/\s+([.,;:])/g, '$1')
     .trim();
 }
+
+/** An answer that is only a heading or label ("PUBLIC AFFAIRS (MAC 214)", "To Government") for a question that
+ *  wants an explanation: the small model copied a title instead of answering. */
+export function looksLikeFragment(answer: string, question: string): boolean {
+  const a = String(answer ?? '').trim();
+  if (!a || /^(?:who|whom|when|where|which|how\s+many|how\s+much|in\s+what\s+year)\b/i.test(question.trim())) return false;
+  const w = a.split(/\s+/).length;
+  if (w > 7) return false;
+  if (/^[A-Z0-9\s()&/:,.-]+$/.test(a) && /[A-Z]{3,}/.test(a)) return true; // ALL CAPS title
+  return !/[.!?]$/.test(a) && !/\b(?:is|are|was|were|has|have|means|involves|helps|makes|gives)\b/i.test(a);
+}
+
+/** The sentence or list line in the passages that best matches the question (fallback answer, quoted). */
+export function bestSentence(question: string, hits: Hit[]): string | null {
+  const qw = new Set(keyWords(question));
+  let best: string | null = null;
+  let bs = 0;
+  for (const h of hits)
+    for (const line of String(h.chunk.text ?? '').split('\n'))
+      for (const s of sentencesOf(line)) {
+        const ws = keyWords(s);
+        if (ws.length < 4) continue;
+        const sc = ws.filter((w) => qw.has(w)).length / Math.sqrt(ws.length);
+        if (sc > bs) {
+          bs = sc;
+          best = s.trim();
+        }
+      }
+  return best && bs > 0 ? stripListNumbers(best) : null;
+}

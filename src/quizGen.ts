@@ -365,7 +365,8 @@ export type Mcq = { question: string; answer: string; options: string[]; correct
 export function sentenceCase(opt: string, notes = ''): string {
   const ws = opt.split(' ');
   const caps = ws.filter((w) => /^[A-Z][a-z]/.test(w)).length;
-  if (ws.length < 2 || caps < Math.max(2, ws.length - 1)) return opt;
+  // two capitalised words are usually a name ("United States", "South Africa"): leave them alone
+  if (ws.length < 3 || caps < Math.max(2, ws.length - 1)) return opt;
   const keep = new Set((notes.match(/(?<![.!?:]\s)(?<!^)\b[A-Z][a-zA-Z]+/g) ?? []).map((w) => w.toLowerCase()));
   return ws.map((w, i) => (i === 0 || /^[A-Z0-9]{2,}$/.test(w) || keep.has(w.toLowerCase()) ? w : w.toLowerCase())).join(' ');
 }
@@ -660,7 +661,9 @@ export function makeMemberMcq(f: Fact, made: string[], slot?: number, rand: () =
   const mine = L.items.map((x) => x.name).filter((x) => wordsN(x) <= 10);
   if (f.neg) {
     // the key is the one option NOT on the list; the wrong ones are listed items
-    const key = pickN(siblings, 1, rand)[0] ?? pickN(others, 1, rand)[0] ?? made[0];
+    // and shares no word with any listed item ("Mobile app" is not offered against "Mobile first")
+    const clear = (x: string) => !nearAny(x, mine, 0.34);
+    const key = pickN(siblings.filter(clear), 1, rand)[0] ?? pickN(others.filter(clear), 1, rand)[0] ?? made.filter(clear)[0];
     if (!key || mine.length < 3) return null;
     const wrong = pickN(mine, 3, rand);
     const bal = balanceOptions(key, wrong);

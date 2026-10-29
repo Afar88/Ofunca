@@ -95,7 +95,7 @@ import {
   tidySnippetStart,
   quizExcerpts,
   search,
-  type Hit, splitQuestions, bestDocHits, listAnswer } from './src/rag';
+  type Hit, splitQuestions, bestDocHits, listAnswer, looksLikeFragment, bestSentence } from './src/rag';
 import { SAMPLE_NOTES, SAMPLE_TITLE } from './src/sample';
 
 // Every button answers the finger at once: a soft dim while pressed (plus the Android ripple), so taps
@@ -1012,6 +1012,17 @@ function Main() {
             setGenerating(false);
           }
           if (summary) answer = isNotFound(answer) ? '' : endAtSentence(answer);
+          else if (looksLikeFragment(answer, part)) {
+            // the model copied a heading instead of answering: quote the best-matching sentence instead (v1.0.17)
+            const bestLine = bestSentence(part, hits);
+            const inLine = (t: string) => {
+              const ws = t.toLowerCase().match(/[a-z0-9]{3,}/g) ?? [];
+              const l = (bestLine ?? '').toLowerCase();
+              return ws.length > 0 && ws.every((w) => l.includes(w));
+            };
+            // a short answer the best sentence backs ("Premium listings and advertising") is a real answer: keep it
+            if (bestLine && !inLine(answer)) answer = `From your notes: “${bestLine}”`;
+          }
           if (answer.replace(/[^a-z0-9]/gi, '').length < 3) {
             answer = `From your notes: “${tidySnippetStart(hits[0]?.chunk.text ?? '').slice(0, 300)}”`;
           }
