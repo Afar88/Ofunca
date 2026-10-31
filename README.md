@@ -7,6 +7,18 @@ An Android app that turns your own notes (PDFs, text files, pasted text or photo
 
 Built for the **AI Yako hackathon (Tether QVAC × DoraHacks)**. Suggested track: **Offline AI apps** (also eligible for the overall prize).
 
+## ⏱️ How to test in 2 minutes
+
+- **No phone?** Watch the [2:38 demo](https://drive.google.com/file/d/1TUse0gTQHFFupokFWgBq-f0oFWReBac2/view), recorded in airplane mode.
+- **Device:** a real Android 10+ phone, 64-bit ARM (arm64), about 4 GB RAM or more recommended (tested on 8 GB). Emulators and 32-bit phones are not supported (QVAC ships arm64 binaries only).
+- **Get it:** download the signed [`Ofunca-v1.0.17.apk`](https://github.com/Afar88/Ofunca/releases/download/v1.0.17/Ofunca-v1.0.17.apk) from [Releases](https://github.com/Afar88/Ofunca/releases/latest), install it (allow *install unknown apps* if asked).
+
+1. Open Ofunca on Wi‑Fi and tap **Download AI models** (≈1.05 GB, one time). Wait for **All set!**
+2. Turn on **airplane mode**. Everything below runs on the phone.
+3. **Snap photo** of a printed page (or **Paste text**), crop, tap **Read it**, then **Save & index on-device**.
+4. **Ask** a question from those notes: the answer cites `[1]` with source cards. Ask something not in them and it says it couldn't find it.
+5. **Quiz → Quiz me**: answer the A–D questions and see your **Score**.
+
 ---
 
 ## Why
